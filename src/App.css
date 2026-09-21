@@ -1343,43 +1343,128 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.chat-mode-selector-card.dev-mode-card {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dev-badge-banner {
+  background: rgba(245, 158, 11, 0.09);
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: 10px;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.78rem;
+  color: #fbbf24;
+  line-height: 1.45;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-mode-tabs {
   display: flex;
-  background-color: #f1f5f9;
+  background-color: rgba(15, 23, 42, 0.8);
   padding: 0.35rem;
   border-radius: 12px;
   gap: 0.35rem;
-  border: 1px solid var(--border-color);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .mode-tab-btn {
-  flex: 1;
-  padding: 0.65rem 1rem;
-  font-size: 0.88rem;
+  flex: 1 1 0%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.5rem;
+  font-size: 0.82rem;
   font-weight: 600;
-  border: none;
-  background: transparent;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
   border-radius: 8px;
-  color: var(--text-muted);
+  color: #94a3b8;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
+  text-align: center;
 }
 
 .mode-tab-btn:hover:not(.active) {
-  color: #1e293b;
-  background-color: rgba(255, 255, 255, 0.6);
+  color: #f8fafc;
+  background-color: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .mode-tab-btn.active {
-  background-color: #ffffff;
-  color: var(--primary-color);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.18) 0%, rgba(99, 102, 241, 0.18) 100%);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
+}
+
+.mode-tab-icon {
+  font-size: 1.15rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.mode-tab-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.mode-tab-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: block;
+}
+
+.mode-tab-btn.active .mode-tab-title {
+  color: #38bdf8;
+}
+
+.mode-tab-endpoint {
+  font-size: 0.63rem;
+  line-height: 1.25;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  max-width: 100%;
+  display: block;
+  opacity: 0.8;
+}
+
+.mode-tab-btn.active .mode-tab-endpoint {
+  color: #93c5fd;
+  opacity: 1;
 }
 
 .rag-active-banner {
@@ -3442,6 +3527,10 @@
   border-radius: 12px;
   padding: 0.75rem 1rem;
   margin-top: 0.5rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .dev-app-title {
@@ -3449,11 +3538,19 @@
   font-weight: 800;
   color: #fbbf24;
   margin-bottom: 0.2rem;
+  line-height: 1.3;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 .dev-app-subtitle {
   font-size: 0.8rem;
   color: #cbd5e1;
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 /* ==========================================================================
@@ -5983,8 +6080,204 @@
   }
 }
 
+/* ==========================================================================
+   Developer Mode Responsive Layout: Desktop Expansion & Mobile 2-Column Grid
+   ========================================================================== */
 
+/* Desktop view: wide layout for comfortable horizontal cards */
+@media (min-width: 769px) {
+  .app-layout.dev-mode-layout {
+    max-width: 1060px;
+    width: 100%;
+    margin: 0 auto;
+  }
 
+  .chat-mode-tabs {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+  }
 
+  .mode-tab-btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
 
+/* Mobile responsive layout (<= 768px: iQOO, Android, iPhone) */
+@media (max-width: 768px) {
+  .app-layout.dev-mode-layout {
+    width: 100%;
+    max-width: 100%;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
 
+  /* Header & Banner containment on mobile */
+  .app-header {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  .header-top-row {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .brand-header-left {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .dev-settings-wrapper {
+    flex-shrink: 0;
+  }
+
+  .dev-header-banner {
+    padding: 0.65rem 0.75rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .dev-app-title {
+    font-size: 1.05rem;
+    line-height: 1.3;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    max-width: 100%;
+  }
+
+  .dev-app-subtitle {
+    font-size: 0.75rem;
+    line-height: 1.35;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    max-width: 100%;
+  }
+
+  /* Developer Mode Endpoint Cards: 2-Column Responsive Grid */
+  .chat-mode-selector-card.dev-mode-card {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .dev-badge-banner {
+    padding: 0.5rem 0.7rem;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-mode-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    padding: 0.45rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+
+  .mode-tab-btn {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0.6rem 0.65rem;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.45rem;
+    text-align: left;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .mode-tab-btn:hover:not(.active) {
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .mode-tab-icon {
+    font-size: 1.15rem;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .mode-tab-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    text-align: left;
+    min-width: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .mode-tab-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1.25;
+    color: #f8fafc;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+    max-width: 100%;
+  }
+
+  .mode-tab-endpoint {
+    font-size: 0.64rem;
+    line-height: 1.25;
+    color: #94a3b8;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    max-width: 100%;
+    min-width: 0;
+    opacity: 0.85;
+    margin-top: 0.1rem;
+  }
+}
+
+/* Extra small mobile screens (<= 360px) */
+@media (max-width: 360px) {
+  .chat-mode-tabs {
+    gap: 0.35rem;
+    padding: 0.35rem;
+  }
+
+  .mode-tab-btn {
+    padding: 0.5rem 0.45rem;
+    gap: 0.35rem;
+  }
+
+  .mode-tab-icon {
+    font-size: 1rem;
+  }
+
+  .mode-tab-title {
+    font-size: 0.78rem;
+  }
+
+  .mode-tab-endpoint {
+    font-size: 0.6rem;
+  }
+}

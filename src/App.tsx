@@ -579,7 +579,7 @@ export function App() {
         ];
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${isDevMode ? 'dev-mode-layout' : ''}`}>
       {/* Hidden file inputs for camera & gallery photo picker */}
       <input
         ref={cameraInputRef}
@@ -954,48 +954,90 @@ export function App() {
               <div className="dev-badge-banner">
                 🛠️ <strong>Developer Mode Active:</strong> Inspecting raw chunks, 768-D vectors, cosine similarity, agent intent & timing.
               </div>
-              <div className="chat-mode-tabs">
+              <div className="chat-mode-tabs" role="tablist" aria-label="Developer Endpoint Diagnostics">
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'general' ? 'active' : ''}`}
                   onClick={() => setChatMode('general')}
+                  role="tab"
+                  aria-selected={chatMode === 'general'}
+                  title="General Chat Endpoint (/api/ask)"
                 >
-                  🤖 General (/api/ask)
+                  <span className="mode-tab-icon" aria-hidden="true">🤖</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">General</span>
+                    <span className="mode-tab-endpoint">/api/ask</span>
+                  </div>
                 </button>
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'rag' ? 'active' : ''}`}
                   onClick={() => setChatMode('rag')}
+                  role="tab"
+                  aria-selected={chatMode === 'rag'}
+                  title="RAG Pipeline Endpoint (/api/rag/ask)"
                 >
-                  📄 RAG Pipeline (/api/rag/ask)
+                  <span className="mode-tab-icon" aria-hidden="true">📄</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">RAG Pipeline</span>
+                    <span className="mode-tab-endpoint">/api/rag/ask</span>
+                  </div>
                 </button>
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'image' ? 'active' : ''}`}
                   onClick={() => setChatMode('image')}
+                  role="tab"
+                  aria-selected={chatMode === 'image'}
+                  title="Vision & Multimodal Endpoint (/api/image/ask)"
                 >
-                  📷 Vision (/api/image/ask)
+                  <span className="mode-tab-icon" aria-hidden="true">📷</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">Vision</span>
+                    <span className="mode-tab-endpoint">/api/image/ask</span>
+                  </div>
                 </button>
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'agent' ? 'active' : ''}`}
                   onClick={() => setChatMode('agent')}
+                  role="tab"
+                  aria-selected={chatMode === 'agent'}
+                  title="Autonomous Learning Agent Endpoint (/api/agent/learn)"
                 >
-                  🧠 Agent (/api/agent/learn)
+                  <span className="mode-tab-icon" aria-hidden="true">🧠</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">Agent</span>
+                    <span className="mode-tab-endpoint">/api/agent/learn</span>
+                  </div>
                 </button>
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'classroom' ? 'active' : ''}`}
                   onClick={() => setChatMode('classroom')}
+                  role="tab"
+                  aria-selected={chatMode === 'classroom'}
+                  title="Classroom Assistant Endpoint (/api/agent/classroom)"
                 >
-                  🏫 Classroom (/api/agent/classroom)
+                  <span className="mode-tab-icon" aria-hidden="true">🏫</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">Classroom</span>
+                    <span className="mode-tab-endpoint">/api/agent/classroom</span>
+                  </div>
                 </button>
                 <button
                   type="button"
                   className={`mode-tab-btn ${chatMode === 'local-ai' ? 'active' : ''}`}
                   onClick={() => setChatMode('local-ai')}
+                  role="tab"
+                  aria-selected={chatMode === 'local-ai'}
+                  title="Local AI Lab Endpoint (/api/local-ai)"
                 >
-                  🧪 Local AI (/api/local-ai)
+                  <span className="mode-tab-icon" aria-hidden="true">🧪</span>
+                  <div className="mode-tab-info">
+                    <span className="mode-tab-title">Local AI</span>
+                    <span className="mode-tab-endpoint">/api/local-ai</span>
+                  </div>
                 </button>
               </div>
             </section>

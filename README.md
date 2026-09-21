@@ -1,145 +1,257 @@
-# 🧠 Secure Full-Stack Gemini AI Starter (React + Node.js + TypeScript)
+# ByteMind AI Mentor
 
-A clean, beginner-friendly full-stack application for learning **LLM API integration** using Google's official `@google/genai` SDK and React.
+> **"See. Ask. Learn."**
+
+ByteMind is a phone-first multimodal AI learning companion that lets students see what they are studying, ask naturally, and learn using their own study material.
+
+- **Team:** ByteMind
+- **Hackathon:** iQOO Hackathon 2026 — Hyderabad City Battle
+- **Track:** Smart Education
 
 ---
 
-## 🔒 Security Architecture (Why Server-Side?)
+## 🎯 Problem
+
+Students encounter complex questions, mathematical formulas, architectural diagrams, handwritten notes, textbook pages, and classroom slides in their daily physical study routines. 
+
+However, getting timely, contextual AI assistance typically creates friction:
+- **High Friction Input:** Students must manually transcribe equations, describe diagrams in text, or re-type lengthy problem statements.
+- **Context Detachment:** Generic AI chatbots lack access to the student's actual syllabus, textbook chapters, or teacher notes, frequently producing broad, ungrounded explanations or hallucinations that don't match the curriculum.
+- **Workflow Overwhelm:** Autonomous agents often inundate students with unsolicited quizzes, flashcards, or exercises when the student simply needs a direct, clear explanation.
+
+---
+
+## 💡 Solution
+
+ByteMind grounds multimodal AI directly into the student's immediate physical study environment through a seamless three-step loop:
+
+1. **SEE 📷**  
+   Use the phone camera or photo gallery to instantly capture handwritten notes, printed textbook questions, code snippets, or system diagrams.
+2. **ASK 🎙️💬**  
+   Formulate questions naturally through voice input or conversational text without tedious manual transcription.
+3. **LEARN 🧠📚**  
+   ByteMind interprets visual and conversational queries, retrieves grounded context from the student's uploaded study documents (RAG), and delivers precise, step-by-step educational explanations tailored to the material.
+
+---
+
+## ✨ Key Features
+
+- **📷 Multimodal Camera-Based Learning:** Instant camera capture and photo upload for visual question answering on diagrams, slides, and handwritten notes.
+- **🎙️ Voice Interaction:** Mobile speech-to-text allowing students to ask complex academic questions hands-free.
+- **💬 Text-Based AI Mentoring:** Socratic pedagogical mentor persona structured for conceptual clarity and deep understanding.
+- **📚 Grounded RAG over Study Material:** Ingests student course materials and textbooks (e.g., PDFs) to anchor every answer in verified reference content with citation previews.
+- **🧠 Controlled Learning Agent:** Goal-directed agent workflow that detects student learning intents (e.g., explanation, revision checklist, formula sheet, practice set).
+- **🔄 Multi-Turn Conversation Context:** Preserves interactive context across follow-up questions for iterative concept mastering.
+- **📝 Targeted Educational Workflows:**
+  - **Explain:** Clear, intuitive breakdowns with real-world analogies.
+  - **Revision Plans:** High-yield revision roadmaps and formula checklists from student notes.
+  - **Practice:** Practical problems calibrated to study material difficulty.
+  - **Quiz:** Focused knowledge checks with immediate feedback.
+  - *Note: ByteMind does not automatically generate quizzes, practice exercises, or study plans after every response. These workflows are triggered strictly by the student's explicit request.*
+- **🏫 Classroom Assistant:** Teacher and course assistant view to summarize lectures, identify core syllabus topics, and generate structured assignments and assessments directly from course documents.
+- **🤖 Local AI Experimentation:** Developer console and feasibility lab supporting local on-device / local-server models for zero-cost and privacy-preserving inference.
+- **📱 Phone-First Responsive Interface:** Ergonomic mobile-first interface optimized for one-handed operation on mobile devices like iQOO phones.
+
+---
+
+## 🧠 How It Works
 
 ```text
-[ iQOO Phone / Browser ]
-           │
-           │ POST /api/ask { question }
-           ▼
-[ Vite Dev Server :5173 ] ──── (Internal Proxy) ────► [ Express Server :3001 ]
-                                                            │
-                                                            │ Uses GEMINI_API_KEY from .env
-                                                            ▼
-                                                  [ Google Gemini API ]
-                                                  (@google/genai SDK)
+Student
+   ↓
+Camera / Voice / Text
+   ↓
+ByteMind Mobile Frontend
+   ↓
+Learning Agent & Intent Router
+   ↓
+RAG / Student Study Context
+   ↓
+Configured AI Provider
+   ↓
+Grounded Learning Response
 ```
 
-1. **API Key Security**: The `GEMINI_API_KEY` is loaded by Node.js from the root `.env` file. It is **never** bundled or exposed to the client or browser.
-2. **Seamless Mobile Testing**: The Vite dev server proxies `/api` requests to the Express server on port `3001`. When testing on an iQOO phone over local Wi-Fi, the phone talks to the single Vite host URL (`http://<PC_IP>:5173`), eliminating mobile CORS issues.
+### Dual-Environment Architecture
+
+ByteMind is engineered to run seamlessly across two production-tested environments:
+
+1. **Local Development Environment (Ollama + Qwen3):**
+   - **Generation & Agent:** `qwen3:4b` running via local Ollama.
+   - **Vision:** Multimodal understanding via local vision models (`qwen3-vl:4b`).
+   - **RAG Retrieval:** Dense vector embeddings generated locally via `qwen3-embedding:0.6b` with in-memory cosine similarity search.
+   - **Privacy:** 100% private, offline-capable local AI execution.
+
+2. **Public Cloud Deployment (Render + Groq):**
+   - **Generation & Agent:** Ultra-fast, low-latency LLM inference powered by Groq API (`llama-3.3-70b-versatile`).
+   - **Vision:** High-throughput multimodal visual analysis powered by Groq vision models.
+   - **Document Retrieval:** Provider-independent lexical BM25 retrieval over document text chunks.
+   - *Factual Note: Groq is utilized strictly for ultra-fast generation and vision inference; it is not an embedding provider. For the Groq deployment, robust BM25 lexical retrieval matches query keywords against extracted student study chunks before passing relevant context to Groq for generation.*
 
 ---
 
-## 📱 Mobile-Friendly Design (Tested for iQOO Phones)
-- **Touch Targets:** Buttons and interactive elements are sized at $\ge 48\text{px}$ for comfortable thumb tapping.
-- **Input Zoom Prevention:** Text inputs use a 16px base font to prevent mobile Chrome from auto-zooming.
-- **Sample Prompt Chips:** Tap pre-written questions with a single click instead of typing on a phone keyboard.
-- **Full-width Adaptive Button:** The "Ask AI" button stretches to full-width on mobile screens ($\le 480\text{px}$).
+## 🏗️ Architecture
+
+```text
+iQOO Phone / Mobile Browser
+    │
+    ├── 📷 Camera Capture
+    ├── 🎙️ Voice Speech Input
+    └── 💬 Text Input
+         │
+         ▼
+ByteMind Frontend (React + TypeScript + Vite)
+         │  (Mobile-first UI, Audio/Vision capture, Dev Console)
+         │
+         ▼ [REST API Proxy]
+Node.js / Express Backend (:3001)
+         │
+         ├── 🧠 Learning Agent (Intent detection, tool orchestrator)
+         ├── 📚 RAG Engine (PDF text extraction, chunking, retrieval)
+         ├── 📷 Vision Handler (Base64 optimization, multimodal payload)
+         └── 🏫 Classroom Assistant (Lecture summaries, assignment generation)
+         │
+         ▼ [Configured Provider Adapter]
+AI Provider Layer
+    ├── 🖥️ Ollama (Local Development: Qwen3 generation + Qwen3 dense vector embeddings)
+    └── ☁️ Groq (Public Deployment: Ultra-fast LLM generation + Lexical BM25 retrieval)
+         │
+         ▼
+Grounded Learning Response (Citations, Markdown explanations, Step-by-step guidance)
+```
 
 ---
 
-## 📁 Complete File Guide & Architecture
+## 🛠️ Technology Stack
 
-| File / Folder | Purpose & Architectural Role |
-| :--- | :--- |
-| [`.env`](./.env) | **Secret Environment File.** Stores `GEMINI_API_KEY` and `PORT`. Ignored by Git to prevent exposing your credentials. |
-| [`.env.example`](./.env.example) | Safe template documenting the environment variables needed by the backend. |
-| [`.gitignore`](./.gitignore) | Explicitly ignores `.env`, `.env.local`, `node_modules/`, and `dist/`. |
-| [`server/index.js`](./server/index.js) | **Backend Server.** An Express server that imports `@google/genai`, validates requests, verifies the presence of `GEMINI_API_KEY`, calls the `gemini-3.6-flash` model via the Interactions API, and provides `GET /api/health` and `POST /api/ask`. |
-| [`server/prompts/mentorPrompt.js`](./server/prompts/mentorPrompt.js) | **System Instructions.** Houses the modular, reusable persona for "ByteMind AI Mentor" with tailored pedagogical rules for CS students, analogies, exam prep, and interactive practice challenges. |
-| [`package.json`](./package.json) | Lists dependencies (`@google/genai`, `express`, `cors`, `dotenv`, `react`, `react-dom`) and runs both frontend and backend concurrently via `npm run dev`. |
-| [`vite.config.ts`](./vite.config.ts) | Configures Vite, enables `host: true` for mobile access, and sets up a proxy mapping `/api` $\to$ `http://localhost:3001`. |
-| [`tsconfig.json`](./tsconfig.json) | TypeScript compiler options (strict typing, React JSX transform, ES2020 target). |
-| [`tsconfig.node.json`](./tsconfig.node.json) | TypeScript configuration specifically for Vite tooling files. |
-| [`index.html`](./index.html) | HTML entry point with `<meta name="viewport">` mobile scaling and root mounting element. |
-| [`src/main.tsx`](./src/main.tsx) | React DOM entry point that initializes `ReactDOM.createRoot` inside `React.StrictMode`. |
-| [`src/App.tsx`](./src/App.tsx) | Main UI orchestrator managing prompt state, loading spinners, sample chips, and error display. |
-| [`src/types.ts`](./src/types.ts) | TypeScript interfaces for request lifecycle states (`RequestStatus`, `AIResponseState`). |
-| [`src/services/aiService.ts`](./src/services/aiService.ts) | **Frontend API Layer.** Calls `POST /api/ask` using `fetch()`. Formats server responses and surfaces actionable errors to the UI. |
-| [`src/components/QuestionInput.tsx`](./src/components/QuestionInput.tsx) | Textarea input with `Enter` key submission and the **"Ask AI"** button. |
-| [`src/components/ResponseDisplay.tsx`](./src/components/ResponseDisplay.tsx) | Multi-state viewer: Idle, Loading (pulsing dots), Error banner, and Success card with a Copy button. |
-| [`src/index.css`](./src/index.css) | Global styles, typography, and mobile tap resets. |
-| [`src/App.css`](./src/App.css) | Responsive component layout, card styles, and mobile media queries. |
+| Layer | Technology | Description |
+| :--- | :--- | :--- |
+| **Frontend** | React 18, TypeScript, Vite | Mobile-first SPA with touch-friendly controls, camera hooks, and responsive dark theme |
+| **Backend** | Node.js, Express | Modular REST API with streaming, multi-provider abstraction, and session management |
+| **AI Providers** | Ollama (Local), Groq (Cloud) | Multi-provider architecture supporting Qwen3, Groq Llama 3.3, and multimodal vision models |
+| **RAG & Search** | PDF-Parse, BM25 Lexical, Vector Engine | Dense cosine similarity retrieval (Local) and provider-independent BM25 keyword retrieval (Cloud) |
+| **Styling** | Vanilla CSS3 | Custom token-driven design system with dark mode and zero runtime overhead |
+| **Deployment** | GitHub, Render | Continuous deployment with automatic health probes and environment switching |
 
 ---
 
-## 🚀 How to Run the Application
+## 🤖 Learning Agent
 
-### 1. Add your Gemini API Key
-1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
-2. Open the `.env` file in the project root:
-   ```env
-   GEMINI_API_KEY=AIzaSy...your_actual_key_here...
-   PORT=3001
-   ```
+ByteMind features an intentional, controlled learning agent that avoids hallucinating unneeded artifacts:
 
-### 2. Generate Local HTTPS Certificates (One-Time Setup)
-To support microphone input and speech recognition on physical mobile devices (e.g. iQOO phone), Vite runs over HTTPS with locally trusted development certificates:
+- **Explain:** Deconstructs complex technical concepts with intuitive mental models.
+- **Summary:** Condenses dense syllabus material into concise takeaways.
+- **Study Plan:** Outlines realistic milestones based on syllabus documents.
+- **Revision Plan:** Formulates high-yield exam checklists and formula summaries from student notes.
+- **Practice:** Generates relevant practice questions matched to student progress.
+- **Quiz:** Interactive self-assessment checks with answers and reasoning.
+- **Topic Identification:** Highlights critical core themes from newly introduced material.
+
+> **Important Guarantee:**  
+> ByteMind does not automatically generate quizzes, practice exercises or study plans after every response. These workflows are triggered by the student's explicit request.
+
+---
+
+## 🏫 Classroom Assistant
+
+The Classroom Assistant view provides structured, curriculum-aligned academic workflows:
+
+- **Summarize Lecture:** Distills lecture slides, transcripts, and reading material into clear learning outcomes.
+- **Identify Core Topics:** Maps prerequisites, key definitions, and focal exam topics.
+- **Create Assignment:** Produces hands-on homework exercises and lab challenges directly grounded in course documents.
+- **Create Assessment:** Formulates balanced diagnostic questions to evaluate student comprehension.
+
+*Scope Note: The Classroom Assistant reuses the verified study-document and RAG infrastructure. It does not perform attendance logging, timetable administration, or automated student grading.*
+
+---
+
+## 📱 Phone-First Experience
+
+In real-world studying, students use their smartphones as their primary lens. ByteMind is specifically optimized for physical phone hardware such as the **iQOO** smartphone:
+
+```text
+Capture a textbook question with Camera
+           ↓
+Ask clarification naturally via Voice
+           ↓
+ByteMind retrieves syllabus context from uploaded notes
+           ↓
+Receive clear, grounded pedagogical explanation
+           ↓
+Optionally request: Revise • Practice • Quiz
+```
+
+- **Touch Ergonomics:** All interactive buttons exceed 44px touch targets with responsive thumb-friendly placement.
+- **Viewport Containment:** Engineered to prevent horizontal overflow across all screen widths (including narrow 360px–412px mobile viewports).
+- **Responsive Developer Console:** 2-column adaptive grid layout on mobile screens ensuring engineering endpoints remain accessible without layout breakage.
+
+*(Future Exploration: Native Android on-device NPU acceleration and offline camera pipelines are planned for future hardware-specific iterations).*
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js (v18 or higher)
+- npm (v9 or higher)
+- *(Optional for Local AI)*: [Ollama](https://ollama.com/) with `qwen3:4b` and `qwen3-embedding:0.6b`
+
+### 1. Clone & Install
+
 ```bash
-npm run certs
+git clone https://github.com/Nagendra-avg-art/bytemind-ai-mentor-lab.git
+cd bytemind-ai-mentor-lab
+npm install
 ```
-This automatically uses `mkcert` (included in `certs/mkcert.exe`) to generate:
-- **Server Certificate:** `certs/bytemind-cert.pem` & `certs/bytemind-key.pem` valid for `localhost`, `127.0.0.1`, and `192.168.0.123`.
-- **Root CA:** `certs/rootCA.crt` (and `certs/rootCA.pem`).
 
-To install the CA into Windows so Chrome/Edge on your PC trusts it automatically without warnings:
-```powershell
-.\certs\mkcert.exe -install
+### 2. Configure Environment
+
+Copy the example environment file:
+```bash
+cp .env.example .env
 ```
-(When the Windows Security Warning pop-up appears, click **Yes**).
 
-### 3. Start Both Backend & Frontend
-Run a single command:
+Set your chosen provider in `.env`:
+
+**Option A — Cloud Deployment (Groq):**
+```env
+PORT=3001
+AI_PROVIDER=groq
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_CHAT_MODEL=llama-3.3-70b-versatile
+```
+
+**Option B — Local Development (Ollama):**
+```env
+PORT=3001
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=qwen3:4b
+OLLAMA_EMBED_MODEL=qwen3-embedding:0.6b
+```
+
+### 3. Run Development Server
+
 ```bash
 npm run dev
 ```
 
-`concurrently` starts:
-- **Express Backend:** listening on `http://localhost:3001` (internal API)
-- **Vite Frontend:** listening on HTTPS with reverse proxy `/api` -> `http://localhost:3001`
+Both services will start concurrently:
+- **Express Backend:** `http://localhost:3001`
+- **Vite Frontend:** `http://localhost:5173`
 
-```text
-[server] 🚀 Gemini API backend server listening on http://localhost:3001
-[client] ➜  Local:   https://localhost:5173/ (or https://localhost:5174/)
-[client] ➜  Network: https://192.168.0.123:5173/ (or https://192.168.0.123:5174/)
+Access ByteMind in your desktop or mobile browser at `http://localhost:5173`.
+
+### 4. Build for Production
+
+```bash
+npm run build
+npm start
 ```
 
 ---
 
-## 📱 Testing on Your iQOO Phone (Microphone & Secure Context)
+## 👥 Team ByteMind
 
-Mobile browsers require a **Secure Context** (`window.isSecureContext === true`) to enable `navigator.mediaDevices` and the Web Speech API. ByteMind provides local HTTPS to meet this requirement.
-
-### 1. Network Connection
-1. Ensure your iQOO phone is connected to the **same Wi-Fi network** as your laptop.
-2. The phone access URL is:
-   ```text
-   https://192.168.0.123:5173
-   ```
-   *(or port `5174` if port `5173` is occupied).*
-
-### 2. Trusting the Local Certificate on iQOO (Android / Funtouch OS)
-
-#### Option A: Quick Proceed (Instant, No Installation Needed)
-1. Open Chrome on your iQOO phone and go to `https://192.168.0.123:5173`.
-2. You may see a Chrome warning: *"Your connection is not private"* (due to the self-signed local CA).
-3. Tap **Advanced** at the bottom.
-4. Tap **Proceed to 192.168.0.123 (unsafe)**.
-5. Chrome will establish an HTTPS session and activate **Secure Context** (`isSecureContext === true`), allowing you to grant microphone permissions immediately!
-
-#### Option B: Full Root CA Installation (Clean & Warning-Free)
-To make Chrome completely trust the local HTTPS connection without any warning:
-1. **Transfer the CA certificate:** Send [`certs/rootCA.crt`](./certs/rootCA.crt) (or `certs/ByteMind-Local-CA.crt`) to your phone (via USB, Quick Share, Google Drive, or email).
-2. **On your iQOO phone:**
-   - Open **Settings** -> **Security** (or **Security & Privacy**).
-   - Tap **More security settings** -> **Encryption & credentials** (or search "credentials" in Settings).
-   - Tap **Install a certificate** (or **Install from storage**).
-   - Select **CA certificate**.
-   - If prompted with *"Your data won't be private"*, tap **Install anyway**.
-   - Browse and select `rootCA.crt` from your Downloads/Storage.
-   - Name it `ByteMind mkcert CA` and confirm with your device PIN.
-3. Open `https://192.168.0.123:5173` in Chrome. You will see a secure lock icon, and microphone/speech recognition will work seamlessly!
-
-### 3. Verify Diagnostics on Phone
-When opening `https://192.168.0.123:5173`, verify:
-- **Secure Context:** YES (`true`)
-- **Protocol:** `https:`
-- **MediaDevices:** YES (`navigator.mediaDevices` available)
-- **Speech Recognition:** YES
-- **Permission:** `prompt` or `granted`
-
-> **Note:** The backend remains securely on `localhost:3001` on your laptop; all frontend requests to `/api` are handled by Vite's secure reverse proxy so port 3001 is never directly exposed to the mobile network.
+Built with ❤️ for the **iQOO Hackathon 2026 — Hyderabad City Battle**  
+*Track: Smart Education*
