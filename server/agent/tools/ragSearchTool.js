@@ -30,17 +30,26 @@
  * Does NOT regenerate document embeddings.
  */
 
-import { generateEmbedding, hasEmbeddedChunks } from '../../utils/embeddingService.js';
+import {
+  generateEmbedding,
+  hasEmbeddedChunks,
+  getEmbeddedDocument,
+  getDocumentChunks,
+  getAllRawChunks,
+} from '../../utils/embeddingService.js';
 import { searchVectorChunks, isDbConfigured } from '../../db/vectorStore.js';
 import { DEFAULT_SIMILARITY_THRESHOLD } from '../../config/ragConfig.js';
 import { assembleRAGContext } from '../../utils/contextAssembly.js';
+import { searchLexicalBM25 } from '../../utils/lexicalSearch.js';
+import { getActiveProviderName } from '../../providers/index.js';
 
 /**
  * Checks whether any study material documents currently exist in storage.
  * @returns {boolean}
  */
 export function isDocumentStorageAvailable() {
-  return isDbConfigured() || hasEmbeddedChunks();
+  const activeProviderName = getActiveProviderName();
+  return isDbConfigured() || hasEmbeddedChunks(activeProviderName);
 }
 
 /**
@@ -74,9 +83,12 @@ export function isDocumentStorageAvailable() {
  * }>}
  */
 export async function executeRagSearch({ query, documentId, topK = 4, threshold }) {
+  const activeProviderName = getActiveProviderName();
   const effectiveThreshold =
     threshold !== undefined && !isNaN(Number(threshold))
       ? Number(threshold)
+      : activeProviderName === 'groq'
+      ? 0.12
       : DEFAULT_SIMILARITY_THRESHOLD;
 
   if (!query || typeof query !== 'string' || !query.trim()) {
@@ -113,16 +125,43 @@ export async function executeRagSearch({ query, documentId, topK = 4, threshold 
   }
 
   try {
-    // 1. Generate query embedding for search (reuses gemini-embedding-2, no re-embedding of docs)
-    const queryEmbedding = await generateEmbedding(trimmedQuery);
+    let rankedChunks = [];
 
-    // 2. Perform vector search (via pgvector or in-memory fallback)
-    const rankedChunks = await searchVectorChunks({
-      queryEmbedding,
-      topK: Math.max(1, Math.min(topK, 10)),
-      documentId: documentId ? documentId.trim() : undefined,
-      threshold: 0.0,
-    });
+    // Dual strategy:
+    // If Groq: BM25 lexical keyword retrieval over extracted chunks (zero Gemini embedding quota)
+    // If Ollama: dense vector search with qwen3-embedding:0.6b
+    if (activeProviderName === 'groq') {
+      let candidateChunks = [];
+      if (documentId && typeof documentId === 'string' && documentId.trim()) {
+        const cleanId = documentId.trim();
+        candidateChunks =
+          getDocumentChunks(cleanId) ||
+          getDocumentChunks(cleanId.replace(/\.pdf$/, '')) ||
+          getDocumentChunks(`${cleanId}.pdf`) ||
+          [];
+      }
+      if (!candidateChunks || candidateChunks.length === 0) {
+        candidateChunks = getAllRawChunks();
+      }
+
+      rankedChunks = searchLexicalBM25({
+        query: trimmedQuery,
+        chunks: candidateChunks,
+        topK: Math.max(1, Math.min(topK, 10)),
+        threshold: 0.0,
+      });
+    } else {
+      // 1. Generate query embedding for search (Ollama or Gemini)
+      const queryEmbedding = await generateEmbedding(trimmedQuery);
+
+      // 2. Perform vector search (via pgvector or in-memory fallback)
+      rankedChunks = await searchVectorChunks({
+        queryEmbedding,
+        topK: Math.max(1, Math.min(topK, 10)),
+        documentId: documentId ? documentId.trim() : undefined,
+        threshold: 0.0,
+      });
+    }
 
     if (!rankedChunks || rankedChunks.length === 0) {
       return {

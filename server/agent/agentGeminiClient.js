@@ -14,6 +14,12 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { getActiveProvider, getActiveProviderName } from '../providers/index.js';
+import { getOrCreateSession, getSessionHistory, recordTurn } from '../services/sessionService.js';
+import {
+  LOCAL_BYTEMIND_MENTOR_SYSTEM_INSTRUCTION,
+  LOCAL_BYTEMIND_RAG_SYSTEM_INSTRUCTION,
+} from '../prompts/mentorPrompt.js';
 
 /**
  * Developer Mode Gemini status tracker:
@@ -231,6 +237,41 @@ export const DEFAULT_AGENT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash
  * @returns {Promise<{ output_text: string, id: string }>}
  */
 export async function callAgentGemini(interactionParams, customClient = null) {
+  const activeProvider = getActiveProvider();
+  const activeProviderName = getActiveProviderName();
+  if (activeProviderName !== 'gemini') {
+    const session = getOrCreateSession(interactionParams.previous_interaction_id);
+    const history = getSessionHistory(session.id);
+
+    let effectiveSystemInstruction = interactionParams.system_instruction;
+    if (activeProviderName === 'ollama') {
+      const inputStr = typeof interactionParams.input === 'string' ? interactionParams.input : '';
+      const hasStudyMaterial = inputStr.includes('STUDENT MATERIAL') || inputStr.includes('RETRIEVED STUDY MATERIAL');
+      effectiveSystemInstruction = hasStudyMaterial
+        ? LOCAL_BYTEMIND_RAG_SYSTEM_INSTRUCTION
+        : LOCAL_BYTEMIND_MENTOR_SYSTEM_INSTRUCTION;
+    }
+
+    console.log(`[Agent] generation provider = ${activeProvider.name}`);
+    console.log(`[Agent] generation model = ${activeProvider.model}`);
+    const result = await withTimeout(
+      activeProvider.chat({
+        prompt: interactionParams.input,
+        systemInstruction: effectiveSystemInstruction,
+        history,
+      }),
+      120000,
+      `${activeProvider.name} generation timed out after 120 seconds.`
+    );
+
+    recordTurn(session.id, interactionParams.input, result.text);
+
+    return {
+      output_text: result.text,
+      id: session.id,
+    };
+  }
+
   const client = customClient || getAgentGenAIClient();
   const maxRetries = 1; // Maximum 1 retry for development/test environment
   let attempt = 0;

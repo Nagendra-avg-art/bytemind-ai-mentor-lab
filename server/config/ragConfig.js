@@ -16,7 +16,7 @@
 export const DEFAULT_SIMILARITY_THRESHOLD =
   process.env.RAG_SIMILARITY_THRESHOLD && !isNaN(Number(process.env.RAG_SIMILARITY_THRESHOLD))
     ? Number(process.env.RAG_SIMILARITY_THRESHOLD)
-    : 0.55;
+    : 0.40;
 
 // Default number of chunks to retrieve for context assembly (concise context window)
 export const DEFAULT_TOP_K = 3;

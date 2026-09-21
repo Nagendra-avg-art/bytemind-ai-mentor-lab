@@ -36,6 +36,9 @@ export interface ChatMessage {
   relevantDocument?: string | null;
   executionMs?: number;
   localAI?: LocalAiMetadata;
+  provider?: string;
+  model?: string;
+  isLocalAI?: boolean;
 }
 
 /**
@@ -44,6 +47,10 @@ export interface ChatMessage {
 export interface AskAIResponse {
   answer: string;
   interactionId: string;
+  provider?: string;
+  model?: string;
+  executionMs?: number;
+  localAI?: boolean;
 }
 
 /**
@@ -144,6 +151,10 @@ export interface RAGAskResponse {
   answer: string;
   interactionId: string;
   sources: RAGSource[];
+  provider?: string;
+  model?: string;
+  executionMs?: number;
+  localAI?: boolean;
 }
 
 /**
@@ -153,6 +164,10 @@ export interface ImageAskResponse {
   success: boolean;
   answer: string;
   interactionId: string;
+  provider?: string;
+  model?: string;
+  executionMs?: number;
+  localAI?: boolean;
 }
 
 /**

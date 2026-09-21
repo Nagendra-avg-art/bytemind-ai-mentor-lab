@@ -20,6 +20,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { getActiveProvider, getActiveProviderName } from '../providers/index.js';
 
 const EMBEDDING_MODEL = 'gemini-embedding-2';
 const EMBEDDING_DIMENSIONS = 768;
@@ -30,7 +31,7 @@ const rawChunksStore = new Map();
 const embeddedDocumentsStore = new Map();
 
 /**
- * Validates and initializes the GoogleGenAI SDK client.
+ * Validates and initializes the GoogleGenAI SDK client for Gemini provider fallback.
  * @returns {GoogleGenAI}
  */
 function getGenAIClient() {
@@ -109,8 +110,29 @@ export async function generateEmbedding(text) {
     throw new Error('Cannot generate embedding for empty or missing text.');
   }
 
-  const ai = getGenAIClient();
   const trimmedText = text.trim();
+  const provider = getActiveProvider();
+  const activeProviderName = getActiveProviderName();
+
+  // 1. If local Ollama provider is active, strictly use Ollama embeddings (never call Gemini)
+  if (activeProviderName === 'ollama') {
+    if (!provider || typeof provider.embed !== 'function') {
+      throw new Error('OllamaProvider is active but embed() is not implemented.');
+    }
+    const result = await provider.embed({ input: trimmedText });
+    if (result && Array.isArray(result.embeddings) && result.embeddings[0]) {
+      return result.embeddings[0];
+    }
+    throw new Error('Ollama embedding service responded but returned no vector.');
+  }
+
+  // 2. If cloud Groq provider is active, Groq does not generate vector embeddings (never call Gemini)
+  if (activeProviderName === 'groq') {
+    throw new Error('AI_PROVIDER=groq uses lexical BM25 retrieval over text chunks and does not generate vector embeddings.');
+  }
+
+  // 3. Gemini Provider (optional fallback / explicit AI_PROVIDER=gemini)
+  const ai = getGenAIClient();
   let attempt = 0;
   const maxRetries = 3;
 
@@ -237,13 +259,26 @@ export async function embedChunks(rawChunks, documentId) {
   }
 
   const cleanDocId = documentId || rawChunks[0]?.documentId || 'document';
+  const provider = getActiveProvider();
+  const activeProviderName = getActiveProviderName();
+  const activeModel = activeProviderName === 'ollama'
+    ? (process.env.OLLAMA_EMBED_MODEL || 'qwen3-embedding:0.6b')
+    : activeProviderName === 'groq'
+    ? (process.env.GROQ_EMBED_MODEL || 'groq-embedding')
+    : EMBEDDING_MODEL;
 
-  // 1. Check in-memory cache: if already embedded, reuse cached vectors without re-embedding
+  // 1. Check in-memory cache: if already embedded, verify provider matches to prevent mixing
   if (cleanDocId && embeddedDocumentsStore.has(cleanDocId)) {
     const cached = embeddedDocumentsStore.get(cleanDocId);
     if (Array.isArray(cached) && cached.length > 0) {
-      console.log(`[RAG] Embedding reused from cache for document "${cleanDocId}" (${cached.length} chunks).`);
-      return cached;
+      const cachedProvider = cached[0]?.embeddingProvider || 'gemini';
+      if (cachedProvider === activeProviderName) {
+        console.log(`[RAG] Embedding reused from cache for document "${cleanDocId}" (${cached.length} chunks, provider: ${cachedProvider}).`);
+        return cached;
+      } else {
+        console.log(`[RAG] Invalidating cache for "${cleanDocId}" due to provider switch (${cachedProvider} -> ${activeProviderName}).`);
+        embeddedDocumentsStore.delete(cleanDocId);
+      }
     }
   }
 
@@ -252,16 +287,29 @@ export async function embedChunks(rawChunks, documentId) {
     normalizeChunk(chunk, index, cleanDocId)
   );
 
-  const ai = getGenAIClient();
   const allVectors = [];
 
-  // 3. Process in batches of up to MAX_BATCH_SIZE (50)
-  for (let i = 0; i < normalizedChunks.length; i += MAX_BATCH_SIZE) {
-    const slice = normalizedChunks.slice(i, i + MAX_BATCH_SIZE);
-    const sliceTexts = slice.map((c) => c.text);
-
-    const vectors = await embedTextBatchWithRetry(ai, sliceTexts);
-    allVectors.push(...vectors);
+  // 3. Process with active provider
+  if (activeProviderName === 'ollama' && provider && typeof provider.embed === 'function') {
+    const allTexts = normalizedChunks.map((c) => c.text);
+    for (let i = 0; i < allTexts.length; i += 20) {
+      const slice = allTexts.slice(i, i + 20);
+      const res = await provider.embed({ input: slice });
+      if (!res.embeddings || res.embeddings.length !== slice.length) {
+        throw new Error(`Ollama embed returned ${res.embeddings?.length || 0} vectors for ${slice.length} chunks`);
+      }
+      allVectors.push(...res.embeddings);
+    }
+  } else if (activeProviderName === 'groq') {
+    throw new Error('AI_PROVIDER=groq uses lexical BM25 retrieval over text chunks and does not generate vector embeddings. Use storeDocumentChunks() instead.');
+  } else {
+    const ai = getGenAIClient();
+    for (let i = 0; i < normalizedChunks.length; i += MAX_BATCH_SIZE) {
+      const slice = normalizedChunks.slice(i, i + MAX_BATCH_SIZE);
+      const sliceTexts = slice.map((c) => c.text);
+      const vectors = await embedTextBatchWithRetry(ai, sliceTexts);
+      allVectors.push(...vectors);
+    }
   }
 
   // 4. Verify 1:1 mapping
@@ -271,7 +319,7 @@ export async function embedChunks(rawChunks, documentId) {
     );
   }
 
-  // 5. Assemble stored chunk structures
+  // 5. Assemble stored chunk structures with embedding metadata (Requirement 3)
   const embeddedChunks = normalizedChunks.map((chunk, idx) => ({
     chunkId: chunk.chunkId,
     documentId: chunk.documentId,
@@ -280,6 +328,9 @@ export async function embedChunks(rawChunks, documentId) {
     wordCount: chunk.wordCount,
     charCount: chunk.charCount,
     embedding: allVectors[idx],
+    embeddingProvider: activeProviderName,
+    embeddingModel: activeModel,
+    embeddingDimension: allVectors[idx]?.length || EMBEDDING_DIMENSIONS,
   }));
 
   // 6. Cache in memory store
@@ -321,83 +372,149 @@ export function storeEmbeddedDocument(documentId, embeddedChunks) {
  * @param {string} documentId
  * @returns {Array<{ chunkId: string, documentId: string, chunkIndex: number, text: string, embedding: number[] }> | undefined}
  */
-export function getEmbeddedDocument(documentId) {
+/**
+ * Retrieve cached embedded chunks from server RAM with flexible lookup.
+ * Supports exact match, sanitized keys, with/without .pdf extension,
+ * case-insensitive matching, and chunk-level metadata matching.
+ * Validates that chunks belong to requiredProvider (defaults to active provider).
+ * 
+ * @param {string} documentId
+ * @param {string} [requiredProvider] - e.g. 'ollama' or 'gemini'
+ * @returns {Array<{ chunkId: string, documentId: string, chunkIndex: number, text: string, embedding: number[], embeddingProvider?: string, embeddingModel?: string, embeddingDimension?: number }> | undefined}
+ */
+export function getEmbeddedDocument(documentId, requiredProvider) {
   if (!documentId || typeof documentId !== 'string') return undefined;
   const raw = documentId.trim();
+  const targetProvider = requiredProvider || getActiveProviderName();
 
+  let chunks;
   // 1. Exact key match
   if (embeddedDocumentsStore.has(raw)) {
-    return embeddedDocumentsStore.get(raw);
-  }
+    chunks = embeddedDocumentsStore.get(raw);
+  } else {
+    // 2. Sanitized key match (e.g. spaces/special chars converted to _)
+    const sanitized = raw.replace(/[^\w.-]/g, '_');
+    if (embeddedDocumentsStore.has(sanitized)) {
+      chunks = embeddedDocumentsStore.get(sanitized);
+    } else {
+      // 3. Match with or without .pdf extension
+      const withoutExt = raw.toLowerCase().endsWith('.pdf') ? raw.slice(0, -4) : raw;
+      const withExt = raw.toLowerCase().endsWith('.pdf') ? raw : `${raw}.pdf`;
 
-  // 2. Sanitized key match (e.g. spaces/special chars converted to _)
-  const sanitized = raw.replace(/[^\w.-]/g, '_');
-  if (embeddedDocumentsStore.has(sanitized)) {
-    return embeddedDocumentsStore.get(sanitized);
-  }
+      if (embeddedDocumentsStore.has(withoutExt)) chunks = embeddedDocumentsStore.get(withoutExt);
+      else if (embeddedDocumentsStore.has(withExt)) chunks = embeddedDocumentsStore.get(withExt);
+      else {
+        // 4. Case-insensitive key match
+        const lowerRaw = raw.toLowerCase();
+        for (const [key, val] of embeddedDocumentsStore.entries()) {
+          const lowerKey = key.toLowerCase();
+          if (
+            lowerKey === lowerRaw ||
+            lowerKey === withoutExt.toLowerCase() ||
+            lowerKey === withExt.toLowerCase()
+          ) {
+            chunks = val;
+            break;
+          }
+        }
 
-  // 3. Match with or without .pdf extension
-  const withoutExt = raw.toLowerCase().endsWith('.pdf') ? raw.slice(0, -4) : raw;
-  const withExt = raw.toLowerCase().endsWith('.pdf') ? raw : `${raw}.pdf`;
-
-  if (embeddedDocumentsStore.has(withoutExt)) return embeddedDocumentsStore.get(withoutExt);
-  if (embeddedDocumentsStore.has(withExt)) return embeddedDocumentsStore.get(withExt);
-
-  // 4. Case-insensitive key match
-  const lowerRaw = raw.toLowerCase();
-  for (const [key, val] of embeddedDocumentsStore.entries()) {
-    const lowerKey = key.toLowerCase();
-    if (
-      lowerKey === lowerRaw ||
-      lowerKey === withoutExt.toLowerCase() ||
-      lowerKey === withExt.toLowerCase()
-    ) {
-      return val;
-    }
-  }
-
-  // 5. Inspect chunk metadata in stored documents
-  for (const chunks of embeddedDocumentsStore.values()) {
-    if (Array.isArray(chunks) && chunks.length > 0) {
-      const first = chunks[0];
-      const chunkDocId = (first.documentId || '').toLowerCase();
-      const chunkFilename = (first.filename || '').toLowerCase();
-      if (
-        chunkDocId === lowerRaw ||
-        chunkFilename === lowerRaw ||
-        chunkDocId === withoutExt.toLowerCase() ||
-        chunkFilename === withoutExt.toLowerCase()
-      ) {
-        return chunks;
+        // 5. Inspect chunk metadata in stored documents
+        if (!chunks) {
+          for (const val of embeddedDocumentsStore.values()) {
+            if (Array.isArray(val) && val.length > 0) {
+              const first = val[0];
+              const chunkDocId = (first.documentId || '').toLowerCase();
+              const chunkFilename = (first.filename || '').toLowerCase();
+              if (
+                chunkDocId === lowerRaw ||
+                chunkFilename === lowerRaw ||
+                chunkDocId === withoutExt.toLowerCase() ||
+                chunkFilename === withoutExt.toLowerCase()
+              ) {
+                chunks = val;
+                break;
+              }
+            }
+          }
+        }
       }
     }
+  }
+
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    const chunkProvider = chunks[0]?.embeddingProvider || 'gemini';
+    if (targetProvider && targetProvider !== 'groq' && chunkProvider !== targetProvider) {
+      // Different embedding provider/model vectors cannot be mixed in cosine similarity
+      return undefined;
+    }
+    return chunks;
   }
 
   return undefined;
 }
 
 /**
- * Checks whether a specific document has already been embedded in server RAM.
+ * Retrieve all raw/extracted document chunks currently cached in server RAM.
+ * Useful for provider-independent lexical / BM25 search.
+ * @returns {Array<any>}
+ */
+export function getAllRawChunks() {
+  const allChunks = [];
+  const visitedArrays = new Set();
+
+  for (const chunks of rawChunksStore.values()) {
+    if (Array.isArray(chunks) && !visitedArrays.has(chunks)) {
+      visitedArrays.add(chunks);
+      allChunks.push(...chunks);
+    }
+  }
+
+  // Also include chunks from embeddedDocumentsStore if rawChunksStore has fewer
+  for (const chunks of embeddedDocumentsStore.values()) {
+    if (Array.isArray(chunks) && !visitedArrays.has(chunks)) {
+      visitedArrays.add(chunks);
+      allChunks.push(...chunks);
+    }
+  }
+
+  return allChunks;
+}
+
+/**
+ * Checks whether a specific document has already been embedded/indexed in server RAM for the required provider.
  * @param {string} documentId
+ * @param {string} [requiredProvider]
  * @returns {boolean}
  */
-export function hasEmbeddedDocument(documentId) {
+export function hasEmbeddedDocument(documentId, requiredProvider) {
   if (!documentId) return false;
-  const chunks = getEmbeddedDocument(documentId);
+  const targetProvider = requiredProvider || getActiveProviderName();
+  if (targetProvider === 'groq') {
+    return Boolean(getDocumentChunks(documentId) || getDocumentChunks(documentId.replace(/\.pdf$/, '')));
+  }
+  const chunks = getEmbeddedDocument(documentId, targetProvider);
   return Array.isArray(chunks) && chunks.length > 0;
 }
 
 /**
- * Retrieve all cached embedded chunks across all documents currently in server RAM.
- * @returns {Array<{ chunkId: string, documentId: string, chunkIndex: number, text: string, embedding: number[] }>}
+ * Retrieve all cached embedded chunks across all documents currently in server RAM for the required provider.
+ * Never mixes vectors from different providers (e.g. Gemini 768-D vs Ollama 1024-D).
+ * @param {string} [requiredProvider]
+ * @returns {Array<{ chunkId: string, documentId: string, chunkIndex: number, text: string, embedding: number[], embeddingProvider?: string, embeddingModel?: string, embeddingDimension?: number }>}
  */
-export function getAllEmbeddedChunks() {
+export function getAllEmbeddedChunks(requiredProvider) {
+  const targetProvider = requiredProvider || getActiveProviderName();
   const allChunks = [];
   const visitedKeys = new Set();
   for (const [key, chunks] of embeddedDocumentsStore.entries()) {
-    // Avoid double counting if the same chunks array is referenced under both original and sanitized keys
     if (Array.isArray(chunks) && !visitedKeys.has(chunks)) {
       visitedKeys.add(chunks);
+      if (chunks.length > 0 && targetProvider) {
+        const chunkProvider = chunks[0]?.embeddingProvider || 'gemini';
+        if (chunkProvider !== targetProvider) {
+          continue; // Skip chunks embedded by another provider
+        }
+      }
       allChunks.push(...chunks);
     }
   }
@@ -405,27 +522,63 @@ export function getAllEmbeddedChunks() {
 }
 
 /**
- * Checks whether any embedded document chunks currently exist in server RAM.
+ * Checks whether any embedded/indexed document chunks currently exist in server RAM for the required provider.
+ * @param {string} [requiredProvider]
  * @returns {boolean}
  */
-export function hasEmbeddedChunks() {
-  return embeddedDocumentsStore.size > 0 && getAllEmbeddedChunks().length > 0;
+export function hasEmbeddedChunks(requiredProvider) {
+  const targetProvider = requiredProvider || getActiveProviderName();
+  if (targetProvider === 'groq') {
+    return rawChunksStore.size > 0;
+  }
+  return getAllEmbeddedChunks(requiredProvider).length > 0;
 }
 
 /**
- * Returns a list of all currently available documents in memory storage.
- * @returns {Array<{ id: string, filename: string, chunksCount: number, ready: boolean }>}
+ * Returns a list of all currently available documents in memory storage for the required provider.
+ * @param {string} [requiredProvider]
+ * @returns {Array<{ id: string, filename: string, chunksCount: number, ready: boolean, embeddingProvider?: string, embeddingModel?: string, embeddingDimension?: number, retrievalStrategy?: string }>}
  */
-export function listAvailableDocuments() {
+export function listAvailableDocuments(requiredProvider) {
+  const targetProvider = requiredProvider || getActiveProviderName();
   const docsMap = new Map();
   const visitedArrays = new Set();
 
+  if (targetProvider === 'groq') {
+    for (const [key, chunks] of rawChunksStore.entries()) {
+      if (!Array.isArray(chunks) || chunks.length === 0) continue;
+      if (visitedArrays.has(chunks)) continue;
+      visitedArrays.add(chunks);
+
+      const first = chunks[0];
+      const docId = first.documentId || key;
+      const filename = first.filename || key;
+
+      if (!docsMap.has(docId)) {
+        docsMap.set(docId, {
+          id: docId,
+          filename: filename,
+          chunksCount: chunks.length,
+          ready: true,
+          retrievalStrategy: 'lexical-bm25',
+        });
+      }
+    }
+    return Array.from(docsMap.values());
+  }
+
+  // 1. Check embeddedDocumentsStore for dense vector embeddings (Ollama or Gemini)
   for (const [key, chunks] of embeddedDocumentsStore.entries()) {
     if (!Array.isArray(chunks) || chunks.length === 0) continue;
     if (visitedArrays.has(chunks)) continue;
     visitedArrays.add(chunks);
 
     const first = chunks[0];
+    const chunkProvider = first.embeddingProvider || 'gemini';
+    if (targetProvider && chunkProvider !== targetProvider) {
+      continue;
+    }
+
     const docId = first.documentId || key;
     const filename = first.filename || key;
 
@@ -434,8 +587,12 @@ export function listAvailableDocuments() {
       filename: filename,
       chunksCount: chunks.length,
       ready: true,
+      embeddingProvider: chunkProvider,
+      embeddingModel: first.embeddingModel,
+      embeddingDimension: first.embeddingDimension,
     });
   }
 
   return Array.from(docsMap.values());
 }
+

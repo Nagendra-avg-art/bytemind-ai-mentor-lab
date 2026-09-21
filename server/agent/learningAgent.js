@@ -25,6 +25,7 @@ import {
   AVAILABLE_TOOLS,
   isDocumentStorageAvailable,
 } from './tools/index.js';
+import { getActiveProvider, getActiveProviderName } from '../providers/index.js';
 
 export const SUPPORTED_INTENTS = [
   'EXPLAIN',
@@ -198,6 +199,11 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
     throw new Error('Please provide a valid learning goal.');
   }
 
+  const activeProvider = getActiveProvider();
+  const activeProviderName = getActiveProviderName();
+  console.log('[Agent] request received');
+  console.log(`[Agent] provider = ${activeProviderName}`);
+
   const totalStart = performance.now();
   const trimmedGoal = goal.trim();
 
@@ -228,8 +234,12 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
     }
   }
 
+  console.log('[Agent] intent detected');
+  console.log(`[Agent] intent = ${intent}`);
+
   // 2. Deterministic Tool Selection (Requirement 16)
   const selectedTool = selectTool(intent);
+  console.log('[Agent] tool selected');
 
   if (!learningTools[selectedTool]) {
     throw new Error(`Selected tool "${selectedTool}" is not registered in learningTools.`);
@@ -249,6 +259,7 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
   const shouldSearchDocument = Boolean(documentId) || storageAvailable;
 
   if (shouldSearchDocument) {
+    console.log('[Agent] RAG started');
     try {
       const ragResult = await learningTools.RAG_SEARCH.execute({
         query: trimmedGoal,
@@ -278,8 +289,13 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
     } catch (searchError) {
       console.warn('[AGENT] RAG_SEARCH failed, falling back to General Mentor:', searchError.message);
       similarityResult = `Search error: ${searchError.message}`;
+    } finally {
+      console.log('[Agent] RAG completed');
     }
   }
+
+  const retrievalStrategy = hasDocument ? (activeProviderName === 'groq' ? 'lexical-bm25' : 'vector-dense') : 'none';
+  console.log(`[Agent] retrieval = ${retrievalStrategy}`);
 
   // 4. Execute Selected Tool (Single-hop execution, zero recursion, zero autonomous chaining)
   const toolExecutionStart = performance.now();
@@ -287,6 +303,9 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
 
   let toolResult;
   try {
+    console.log('[Agent] generation started');
+    console.log(`[Agent] generation provider = ${activeProviderName}`);
+    console.log(`[Agent] generation model = ${activeProvider.model}`);
     toolResult = await tool.execute({
       goal: trimmedGoal,
       question: trimmedGoal,
@@ -297,6 +316,7 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
       relevantDocument: documentUsed,
       hasDocument,
     });
+    console.log('[Agent] generation completed');
   } catch (error) {
     console.error(`[AGENT] Execution failed for tool "${selectedTool}":`, error?.message || error);
     throw error;
@@ -317,6 +337,8 @@ export async function runLearningAgent({ goal, documentId, interactionId }) {
   console.log(`[AGENT] Retrieved chunks: ${retrievedChunks}`);
   console.log(`[AGENT] Selected tool: ${selectedTool}`);
   console.log(`[AGENT] Total: ${totalMs}ms`);
+
+  console.log('[Agent] response returned');
 
   // 7. Return Structured Metadata (Requirement 13 & 14)
   return {

@@ -199,6 +199,21 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
                   </div>
                 )}
 
+                {/* Developer Mode Provider & Local AI Telemetry */}
+                {isDevMode && !msg.isAgent && (msg.provider || msg.model || msg.isLocalAI) && (
+                  <div className="agent-msg-debug">
+                    <span className="dev-tag">⚡ {msg.isLocalAI || msg.provider === 'ollama' ? 'LOCAL AI' : msg.provider === 'groq' ? 'GROQ CLOUD' : 'GEMINI CLOUD'}</span>
+                    {msg.provider && (
+                      <span>
+                        Provider: <strong>{msg.provider === 'ollama' ? 'Ollama' : msg.provider === 'groq' ? 'Groq' : 'Gemini'}</strong>
+                      </span>
+                    )}
+                    {msg.model && <span>Model: <strong>{msg.model}</strong></span>}
+                    {msg.executionMs !== undefined && <span>Response time: <strong>{msg.executionMs}ms</strong></span>}
+                    {(msg.isLocalAI || msg.provider === 'ollama') && <span>Local AI: <strong>Active</strong></span>}
+                  </div>
+                )}
+
                 <div className="message-content">
                   <pre className="message-text">{msg.text}</pre>
                 </div>

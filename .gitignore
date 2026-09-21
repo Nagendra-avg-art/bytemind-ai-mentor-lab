@@ -1,6 +1,7 @@
 # Environment files (NEVER commit your Gemini API key!)
 .env
 .env.*
+!.env.example
 .env.local
 .env.*.local
 
@@ -28,6 +29,7 @@ dist-ssr
 *.local
 uploads
 temp
+scratch
 
 # Editor directories and files
 .vscode/*

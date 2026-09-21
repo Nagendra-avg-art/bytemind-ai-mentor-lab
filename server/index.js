@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { PDFParse } from 'pdf-parse';
 import { GoogleGenAI } from '@google/genai';
-import { BYTEMIND_MENTOR_SYSTEM_INSTRUCTION } from './prompts/mentorPrompt.js';
+import { BYTEMIND_MENTOR_SYSTEM_INSTRUCTION, LOCAL_BYTEMIND_MENTOR_SYSTEM_INSTRUCTION } from './prompts/mentorPrompt.js';
 import { chunkDocument } from './utils/chunker.js';
 import {
   embedChunks,
@@ -63,6 +63,8 @@ import {
   saveDocumentAndChunks,
   searchVectorChunks,
 } from './db/vectorStore.js';
+import { getActiveProvider, getActiveProviderName, LocalAiUnavailableError, LocalAiTimeoutError, GroqRateLimitError } from './providers/index.js';
+import { getOrCreateSession, getSessionHistory, recordTurn } from './services/sessionService.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -121,24 +123,33 @@ const imageUpload = multer({
 
 /**
  * Health check endpoint.
- * Allows quick verification that the server is alive and reports if an API key is set.
+ * Allows quick verification that the server is alive, checks active AI provider status,
+ * and reports storage/key configuration.
  */
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   const isConfigured = Boolean(apiKey && apiKey.trim().length > 0 && !apiKey.includes('your_gemini_api_key_here'));
   const dbConfigured = isDbConfigured();
   const storageMode = getStorageMode();
   const geminiStatus = getGeminiStatus();
+  const activeProvider = getActiveProvider();
+  const providerHealth = await activeProvider.healthCheck().catch((err) => ({
+    status: 'error',
+    provider: activeProvider.name,
+    available: false,
+    error: err.message,
+  }));
 
   res.json({
     status: 'ok',
+    activeProvider: activeProvider.name,
+    providerHealth,
     apiKeyConfigured: isConfigured,
+    groqConfigured: Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim() && !process.env.GROQ_API_KEY.includes('your_groq_api_key_here')),
     dbConfigured,
     storageMode,
     geminiStatus,
-    message: isConfigured
-      ? `Backend is running. Storage mode: ${storageMode === 'pgvector' ? 'PostgreSQL (pgvector)' : 'In-Memory Fallback'}. Gemini status: ${geminiStatus}.`
-      : 'Backend is running, but GEMINI_API_KEY is not configured in .env.',
+    message: `Backend is running with active provider: ${activeProvider.name} (${providerHealth.model || 'default'}). Storage mode: ${storageMode === 'pgvector' ? 'PostgreSQL (pgvector)' : 'In-Memory Fallback'}.`,
   });
 });
 
@@ -335,7 +346,23 @@ app.post('/api/documents/embed', async (req, res) => {
     console.log('[RAG dev] First chunk text length:', typeof firstChunkText === 'string' ? firstChunkText.length : 0);
     console.log('[RAG dev] First 100 characters of first chunk text:', typeof firstChunkText === 'string' ? firstChunkText.slice(0, 100) : '');
 
-    // 4. Generate embeddings for all chunks via gemini-embedding-2 (768 dimensions)
+    // 4. If active provider is Groq, index directly for lexical BM25 retrieval without embedding
+    const activeProviderName = getActiveProviderName();
+    if (activeProviderName === 'groq') {
+      storeDocumentChunks(cleanDocId, chunksToEmbed);
+      storeDocumentChunks(sanitizedDocId, chunksToEmbed);
+      console.log(`[RAG] Indexed ${chunksToEmbed.length} chunks for lexical retrieval ("${cleanDocId}")`);
+      return res.json({
+        success: true,
+        documentId: cleanDocId,
+        filename: cleanDocId,
+        storageMode: 'lexical',
+        chunksProcessed: chunksToEmbed.length,
+        retrievalStrategy: 'lexical-bm25',
+      });
+    }
+
+    // 4. Generate embeddings for all chunks via active vector provider (Ollama / Gemini)
     const embedStart = performance.now();
     const embeddedChunks = await embedChunks(chunksToEmbed, cleanDocId);
     const embeddingMs = Math.round(performance.now() - embedStart);
@@ -367,11 +394,11 @@ app.post('/api/documents/embed', async (req, res) => {
       filename: cleanDocId,
       storageMode: saveResult.storageMode || getStorageMode(),
       chunksProcessed: embeddedChunks.length,
-      embeddingDimensions: firstEmbedded.embedding.length,
+      embeddingDimensions: firstEmbedded.embedding?.length || 0,
       sample: {
         chunkId: firstEmbedded.chunkId,
         textPreview: textPreview.replace(/\s+/g, ' ').trim(),
-        embeddingPreview: firstEmbedded.embedding.slice(0, 5), // First 5 float values as proof of embedding
+        embeddingPreview: firstEmbedded.embedding?.slice(0, 5) || [], // Preview first float values if vector present
       },
     });
   } catch (error) {
@@ -598,6 +625,63 @@ app.post('/api/rag/ask', async (req, res) => {
     return res.json(result);
   } catch (error) {
     console.error('Error in /api/rag/ask endpoint:', error);
+
+    // 0. Groq Rate Limit Error (Public Render deployment)
+    if (
+      error instanceof GroqRateLimitError ||
+      error?.name === 'GroqRateLimitError' ||
+      (getActiveProviderName() === 'groq' && (
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        error?.code === 'RATE_LIMIT_EXCEEDED' ||
+        error?.message?.toLowerCase().includes('rate limit') ||
+        error?.message?.toLowerCase().includes('rate_limit')
+      ))
+    ) {
+      return res.status(429).json({
+        error: "AI_RATE_LIMIT",
+        message: "AI is temporarily busy. Please try again shortly.",
+        code: "RATE_LIMIT_EXCEEDED",
+        developerDetails: {
+          provider: 'groq',
+          model: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-20b',
+          status: 429,
+          cause: error?.message || 'Groq rate limit reached',
+        },
+      });
+    }
+
+    // 0b. Local AI Timeout / Local AI Unavailable
+    if (
+      error instanceof LocalAiTimeoutError ||
+      error?.code === 'LOCAL_AI_TIMEOUT' ||
+      error?.message?.toLowerCase().includes('timed out') ||
+      error?.message?.toLowerCase().includes('timeout')
+    ) {
+      return res.status(504).json({
+        error: "LOCAL_AI_TIMEOUT",
+        message: "ByteMind local AI took too long to respond.",
+        code: "LOCAL_AI_TIMEOUT",
+        developerDetails: {
+          provider: 'ollama',
+          timeoutMs: 180000,
+          cause: error.message,
+        },
+      });
+    }
+
+    if (error instanceof LocalAiUnavailableError || error?.code === 'LOCAL_AI_UNAVAILABLE') {
+      return res.status(503).json({
+        error: "LOCAL_AI_UNAVAILABLE",
+        message: "ByteMind local AI is currently unavailable.",
+        code: 'LOCAL_AI_UNAVAILABLE',
+        developerDetails: {
+          provider: 'ollama',
+          cause: error.details?.cause || error.message,
+        },
+      });
+    }
+
     const errorMessage = error instanceof Error ? error.message : 'Unknown RAG error occurred';
 
     if (errorMessage.includes('GEMINI_API_KEY')) {
@@ -740,6 +824,31 @@ app.post('/api/image/ask', (req, res) => {
         return res.status(500).json({ error: errorMessage });
       }
 
+      // Groq Rate Limit Error
+      if (
+        error instanceof GroqRateLimitError ||
+        error?.name === 'GroqRateLimitError' ||
+        (getActiveProviderName() === 'groq' && (
+          error?.status === 429 ||
+          error?.statusCode === 429 ||
+          error?.code === 'RATE_LIMIT_EXCEEDED' ||
+          errorMessage.toLowerCase().includes('rate limit') ||
+          errorMessage.toLowerCase().includes('rate_limit')
+        ))
+      ) {
+        return res.status(429).json({
+          error: "AI_RATE_LIMIT",
+          message: "AI is temporarily busy. Please try again shortly.",
+          code: "RATE_LIMIT_EXCEEDED",
+          developerDetails: {
+            provider: 'groq',
+            model: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
+            status: 429,
+            cause: error?.message || 'Groq vision rate limit reached',
+          },
+        });
+      }
+
       const is429 =
         error?.statusCode === 429 ||
         error?.status === 429 ||
@@ -811,13 +920,25 @@ app.post('/api/agent/learn', async (req, res) => {
       });
     }
 
-    // 2. Validate Gemini API key configuration
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
-      return res.status(500).json({
-        error:
-          'GEMINI_API_KEY is not configured on the server. Please add your Gemini API key from https://aistudio.google.com/apikey into the .env file in the project root and restart the server.',
-      });
+    // 2. Validate active AI provider configuration
+    const activeProvider = getActiveProvider();
+    const activeProviderName = getActiveProviderName();
+    if (activeProviderName === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
+        return res.status(500).json({
+          error:
+            'GEMINI_API_KEY is not configured on the server. Please add your Gemini API key into the .env file and restart the server.',
+        });
+      }
+    } else if (activeProviderName === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY;
+      if (!apiKey || !apiKey.trim() || apiKey.includes('your_groq_api_key_here')) {
+        return res.status(500).json({
+          error:
+            'GROQ_API_KEY is not configured on the server. Please add your Groq API key to environment variables.',
+        });
+      }
     }
 
     // 3. Execute controlled Learning Agent
@@ -832,15 +953,57 @@ app.post('/api/agent/learn', async (req, res) => {
     console.error('Error in /api/agent/learn endpoint:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown Learning Agent error';
 
-    // 1. Daily Quota Exhaustion (RPD)
+    // 0. Timeout Error (504)
     if (
-      error?.code === 'QUOTA_EXHAUSTED' ||
-      error?.statusCategory === 'QUOTA_EXHAUSTED' ||
-      error?.isQuotaExhausted ||
-      isDailyQuotaExhausted(error) ||
-      errorMessage.includes('daily quota') ||
-      errorMessage.includes('quota has been reached') ||
-      errorMessage.includes('requests per day')
+      error?.code === 'TIMEOUT' ||
+      error?.code === 'LOCAL_AI_TIMEOUT' ||
+      error?.statusCode === 504 ||
+      errorMessage.toLowerCase().includes('timeout') ||
+      errorMessage.toLowerCase().includes('timed out') ||
+      errorMessage.toLowerCase().includes('took too long')
+    ) {
+      return res.status(504).json({
+        success: false,
+        error: 'Learning Agent request timed out. Please try again.',
+        code: 'TIMEOUT',
+      });
+    }
+
+    // 0.1 Groq Rate Limit Error
+    if (
+      error instanceof GroqRateLimitError ||
+      error?.name === 'GroqRateLimitError' ||
+      (getActiveProviderName() === 'groq' && (
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        error?.code === 'RATE_LIMIT_EXCEEDED' ||
+        errorMessage.toLowerCase().includes('rate limit') ||
+        errorMessage.toLowerCase().includes('rate_limit')
+      ))
+    ) {
+      return res.status(429).json({
+        error: "AI_RATE_LIMIT",
+        message: "AI is temporarily busy. Please try again shortly.",
+        code: "RATE_LIMIT_EXCEEDED",
+        developerDetails: {
+          provider: 'groq',
+          model: process.env.GROQ_CHAT_MODEL || 'llama-3.3-70b-versatile',
+          status: 429,
+          cause: error?.message || 'Groq rate limit reached',
+        },
+      });
+    }
+
+    // 1. Daily Quota Exhaustion (RPD) - Gemini only
+    if (
+      getActiveProviderName() === 'gemini' &&
+      (error?.code === 'QUOTA_EXHAUSTED' ||
+        error?.statusCategory === 'QUOTA_EXHAUSTED' ||
+        error?.isQuotaExhausted ||
+        isDailyQuotaExhausted(error) ||
+        errorMessage.includes('daily quota') ||
+        errorMessage.includes('quota has been reached') ||
+        errorMessage.includes('requests per day'))
     ) {
       setGeminiStatus('QUOTA_EXHAUSTED');
       return res.status(429).json({
@@ -863,15 +1026,20 @@ app.post('/api/agent/learn', async (req, res) => {
       errorMessage.includes('RESOURCE_EXHAUSTED');
 
     if (is429) {
-      setGeminiStatus('TEMPORARY_RATE_LIMIT');
+      const activeName = getActiveProviderName();
+      if (activeName === 'gemini') {
+        setGeminiStatus('TEMPORARY_RATE_LIMIT');
+      }
       return res.status(429).json({
         success: false,
         error:
           error?.code === 'RATE_LIMIT_EXCEEDED'
             ? errorMessage
-            : 'Gemini API rate limit or quota reached. Please wait a moment before asking another question.',
+            : activeName === 'gemini'
+            ? 'Gemini API rate limit or quota reached. Please wait a moment before asking another question.'
+            : 'AI rate limit reached. Please wait a moment before asking another question.',
         code: 'RATE_LIMIT_EXCEEDED',
-        geminiStatus: 'TEMPORARY_RATE_LIMIT',
+        geminiStatus: activeName === 'gemini' ? 'TEMPORARY_RATE_LIMIT' : undefined,
       });
     }
 
@@ -987,16 +1155,29 @@ app.post('/api/agent/classroom', async (req, res) => {
       });
     }
 
-    // Validate Gemini API key configuration
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
-      setGeminiStatus('ERROR');
-      return res.status(500).json({
-        success: false,
-        error: 'GEMINI_API_KEY is not configured on the server. Please check your .env file.',
-        code: 'CONFIG_ERROR',
-        geminiStatus: 'ERROR',
-      });
+    // Validate active provider configuration
+    const activeProvider = getActiveProvider();
+    const activeProviderName = getActiveProviderName();
+    if (activeProviderName === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
+        setGeminiStatus('ERROR');
+        return res.status(500).json({
+          success: false,
+          error: 'GEMINI_API_KEY is not configured on the server. Please check your .env file.',
+          code: 'CONFIG_ERROR',
+          geminiStatus: 'ERROR',
+        });
+      }
+    } else if (activeProviderName === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY;
+      if (!apiKey || !apiKey.trim() || apiKey.includes('your_groq_api_key_here')) {
+        return res.status(500).json({
+          success: false,
+          error: 'GROQ_API_KEY is not configured on the server. Please add your Groq API key to environment variables.',
+          code: 'CONFIG_ERROR',
+        });
+      }
     }
 
     const result = await runClassroomAgent({
@@ -1010,6 +1191,31 @@ app.post('/api/agent/classroom', async (req, res) => {
   } catch (error) {
     console.error('[CLASSROOM ENDPOINT ERROR]:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown Classroom Assistant error';
+
+    // 0. Groq Rate Limit Error
+    if (
+      error instanceof GroqRateLimitError ||
+      error?.name === 'GroqRateLimitError' ||
+      (getActiveProviderName() === 'groq' && (
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        error?.code === 'RATE_LIMIT_EXCEEDED' ||
+        errorMessage.toLowerCase().includes('rate limit') ||
+        errorMessage.toLowerCase().includes('rate_limit')
+      ))
+    ) {
+      return res.status(429).json({
+        error: "AI_RATE_LIMIT",
+        message: "AI is temporarily busy. Please try again shortly.",
+        code: "RATE_LIMIT_EXCEEDED",
+        developerDetails: {
+          provider: 'groq',
+          model: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-20b',
+          status: 429,
+          cause: error?.message || 'Groq rate limit reached',
+        },
+      });
+    }
 
     // 1. Daily Quota Exhaustion (RPD) - HTTP 429 with clean message and no retry
     if (
@@ -1105,60 +1311,123 @@ app.post('/api/ask', async (req, res) => {
       });
     }
 
-    // 2. Validate API key configuration
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
-      return res.status(500).json({
-        error:
-          'GEMINI_API_KEY is not configured on the server. Please add your Gemini API key from https://aistudio.google.com/apikey into the .env file in the project root and restart the server.',
+    const provider = getActiveProvider();
+
+    // 2. Local Ollama & Cloud Groq Provider Flow
+    if (provider.name === 'ollama' || provider.name === 'groq') {
+      const session = getOrCreateSession(interactionId);
+      const history = getSessionHistory(session.id);
+
+      const systemInstruction = provider.name === 'ollama'
+        ? LOCAL_BYTEMIND_MENTOR_SYSTEM_INSTRUCTION
+        : BYTEMIND_MENTOR_SYSTEM_INSTRUCTION;
+
+      const result = await provider.chat({
+        prompt: question.trim(),
+        systemInstruction,
+        history,
+      });
+
+      // Record this turn in the conversation session
+      recordTurn(session.id, question.trim(), result.text);
+
+      return res.json({
+        answer: result.text,
+        interactionId: session.id,
+        provider: result.provider,
+        model: result.model,
+        executionMs: result.metadata?.executionMs,
+        localAI: provider.name === 'ollama',
       });
     }
 
-    // 3. Initialize GoogleGenAI SDK with the secure server-side key
-    const client = new GoogleGenAI({
-      apiKey: apiKey.trim(),
-      httpOptions: {
-        retryOptions: {
-          attempts: 1, // Disable uncontrolled internal retries
-        },
-      },
+    // 3. Gemini Provider Flow
+    const result = await provider.chat({
+      prompt: question.trim(),
+      systemInstruction: BYTEMIND_MENTOR_SYSTEM_INSTRUCTION,
+      interactionId,
     });
-
-    // 4. Construct interaction parameters with the ByteMind AI Mentor persona
-    // Note: system_instruction must be provided on every interaction.create call,
-    // while conversation history is automatically linked via previous_interaction_id.
-    const interactionParams = {
-      model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
-      input: question.trim(),
-      system_instruction: BYTEMIND_MENTOR_SYSTEM_INSTRUCTION,
-    };
-
-    if (interactionId && typeof interactionId === 'string' && interactionId.trim()) {
-      interactionParams.previous_interaction_id = interactionId.trim();
-    }
-
-    // 5. Call the Gemini Interactions API with maxRetries: 0
-    const interaction = await client.interactions.create(interactionParams, { maxRetries: 0 });
-
-    if (!interaction.output_text) {
-      return res.status(500).json({
-        error: 'The Gemini model completed the request but did not return any text response.',
-      });
-    }
 
     setGeminiStatus('AVAILABLE');
 
-    // 6. Return the generated answer and the new interactionId for the next turn
     return res.json({
-      answer: interaction.output_text,
-      interactionId: interaction.id,
+      answer: result.text,
+      interactionId: result.interactionId,
+      provider: result.provider,
+      model: result.model,
+      executionMs: result.metadata?.executionMs,
+      localAI: false,
     });
   } catch (error) {
     console.error('Error in /api/ask endpoint:', error);
 
+    const currentProvider = process.env.AI_PROVIDER || 'gemini';
+    if (currentProvider === 'ollama') {
+      console.error('[Ollama Error in /api/ask]:', error.message);
+    }
+
+    // 0. Groq Rate Limit Error (Public Render deployment)
+    if (
+      error instanceof GroqRateLimitError ||
+      error?.name === 'GroqRateLimitError' ||
+      (getActiveProviderName() === 'groq' && (
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        error?.code === 'RATE_LIMIT_EXCEEDED' ||
+        error?.message?.toLowerCase().includes('rate limit') ||
+        error?.message?.toLowerCase().includes('rate_limit')
+      ))
+    ) {
+      return res.status(429).json({
+        error: "AI_RATE_LIMIT",
+        message: "AI is temporarily busy. Please try again shortly.",
+        code: "RATE_LIMIT_EXCEEDED",
+        developerDetails: {
+          provider: 'groq',
+          model: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-20b',
+          status: 429,
+          cause: error?.message || 'Groq rate limit reached',
+        },
+      });
+    }
+
+    // 1. Local AI Timeout
+    if (
+      error instanceof LocalAiTimeoutError ||
+      error?.code === 'LOCAL_AI_TIMEOUT' ||
+      error?.message?.toLowerCase().includes('timed out') ||
+      error?.message?.toLowerCase().includes('timeout')
+    ) {
+      return res.status(504).json({
+        error: "LOCAL_AI_TIMEOUT",
+        message: "ByteMind local AI took too long to respond.",
+        code: "LOCAL_AI_TIMEOUT",
+        developerDetails: {
+          provider: 'ollama',
+          timeoutMs: 120000,
+          cause: error.message,
+        },
+      });
+    }
+
+    // 2. Local AI Unavailable (Ollama service not running or connection refused)
+    if (error instanceof LocalAiUnavailableError || error?.code === 'LOCAL_AI_UNAVAILABLE') {
+      return res.status(503).json({
+        error: "LOCAL_AI_UNAVAILABLE",
+        message: "ByteMind local AI is currently unavailable.",
+        code: 'LOCAL_AI_UNAVAILABLE',
+        developerDetails: {
+          provider: 'ollama',
+          model: process.env.OLLAMA_CHAT_MODEL || 'qwen3:4b',
+          endpoint: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
+          cause: error.details?.cause || error.message || 'Connection refused',
+        },
+      });
+    }
+
     const errorMessage = error instanceof Error ? error.message : 'Unknown server error occurred';
 
-    // 1. Daily Quota Exhaustion (RPD)
+    // 2. Daily Quota Exhaustion (RPD) - Gemini
     if (
       error?.code === 'QUOTA_EXHAUSTED' ||
       error?.statusCategory === 'QUOTA_EXHAUSTED' ||
@@ -1177,7 +1446,7 @@ app.post('/api/ask', async (req, res) => {
       });
     }
 
-    // 2. Short-term transient rate limit (RPM)
+    // 3. Short-term transient rate limit (RPM) - Gemini
     const is429 =
       error?.statusCode === 429 ||
       error?.status === 429 ||
@@ -1201,7 +1470,7 @@ app.post('/api/ask', async (req, res) => {
       });
     }
 
-    // Handle invalid or expired previous_interaction_id gracefully
+    // 4. Handle invalid or expired previous_interaction_id gracefully
     const requestedInteractionId = req.body?.interactionId;
     const isInteractionSessionError =
       Boolean(requestedInteractionId) &&
@@ -1220,7 +1489,10 @@ app.post('/api/ask', async (req, res) => {
     }
 
     return res.status(500).json({
-      error: `Gemini API Error: ${errorMessage}`,
+      error: "SERVER_ERROR",
+      message: "ByteMind couldn't complete that response. Please try again.",
+      code: error?.code || "SERVER_ERROR",
+      details: errorMessage,
     });
   }
 });
@@ -1232,25 +1504,42 @@ app.post('/api/ask', async (req, res) => {
  */
 async function seedStarterDocumentsIfEmpty() {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
-      console.log('ℹ️  Skipping starter document auto-embedding: GEMINI_API_KEY not configured yet.');
-      return;
+    const activeProviderName = getActiveProviderName();
+    if (activeProviderName === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey || !apiKey.trim() || apiKey.includes('your_gemini_api_key_here')) {
+        console.log('ℹ️  Skipping starter document auto-embedding: GEMINI_API_KEY not configured yet.');
+        return;
+      }
     }
 
     for (const doc of STARTER_DOCUMENTS) {
-      if (hasEmbeddedDocument(doc.documentId) || hasEmbeddedDocument(doc.filename)) {
+      if (activeProviderName === 'groq') {
+        const existing = getDocumentChunks(doc.documentId) || getDocumentChunks(doc.filename);
+        if (existing && existing.length > 0) {
+          continue;
+        }
+
+        console.log(`[RAG Seed] Preparing starter document for lexical retrieval: "${doc.filename}"...`);
+        const chunks = chunkDocument(doc.text, doc.filename);
+        storeDocumentChunks(doc.filename, chunks);
+        storeDocumentChunks(doc.documentId, chunks);
+        console.log(`[RAG Seed] Indexed ${chunks.length} chunks for lexical retrieval`);
         continue;
       }
 
-      console.log(`[RAG Seed] Chunking and embedding starter document: "${doc.filename}"...`);
+      if (hasEmbeddedDocument(doc.documentId, activeProviderName) || hasEmbeddedDocument(doc.filename, activeProviderName)) {
+        continue;
+      }
+
+      console.log(`[RAG Seed] Chunking and embedding starter document with ${activeProviderName}: "${doc.filename}"...`);
       const chunks = chunkDocument(doc.text, doc.filename);
 
       // Store raw chunks in memory
       storeDocumentChunks(doc.filename, chunks);
       storeDocumentChunks(doc.documentId, chunks);
 
-      // Embed chunks via gemini-embedding-2 using existing embedChunks()
+      // Embed chunks via active provider (Ollama when AI_PROVIDER=ollama)
       const embeddedChunks = await embedChunks(chunks, doc.documentId);
 
       // Persist to shared vector store (memory + PostgreSQL if configured)
@@ -1261,7 +1550,7 @@ async function seedStarterDocumentsIfEmpty() {
         chunksWithEmbeddings: embeddedChunks,
       });
 
-      console.log(`[RAG Seed] ✓ Successfully indexed "${doc.filename}" (${embeddedChunks.length} chunks) in shared storage.`);
+      console.log(`[RAG Seed] ✓ Successfully indexed "${doc.filename}" (${embeddedChunks.length} chunks, dim: ${embeddedChunks[0]?.embeddingDimension || embeddedChunks[0]?.embedding?.length}) with ${activeProviderName}.`);
     }
   } catch (err) {
     console.warn('⚠️  Warning during starter document seeding:', err.message);
@@ -1294,8 +1583,11 @@ initDatabase()
 
 // Start the server (bind to 0.0.0.0 to ensure public cloud & LAN access)
 app.listen(PORT, '0.0.0.0', () => {
+  const activeProvider = getActiveProvider();
   console.log(`🚀 ByteMind server listening on http://0.0.0.0:${PORT}`);
-  console.log(`🔑 GEMINI_API_KEY status: ${process.env.GEMINI_API_KEY ? 'Configured' : 'NOT configured (check .env)'}`);
+  console.log(`⚡ Active AI Provider: ${activeProvider.name.toUpperCase()} (AI_PROVIDER=${process.env.AI_PROVIDER || 'ollama [default]'})`);
+  console.log(`🔑 GEMINI_API_KEY status: ${process.env.GEMINI_API_KEY ? 'Configured' : 'NOT configured'}`);
+  console.log(`🔑 GROQ_API_KEY status: ${process.env.GROQ_API_KEY ? 'Configured' : 'NOT configured'}`);
   console.log(`🗄️ Vector Storage: ${isDbConfigured() ? 'PostgreSQL (pgvector)' : 'In-Memory Fallback'}`);
   console.log(`📦 Production Frontend: ${fs.existsSync(distPath) ? 'Enabled (dist/)' : 'Development (dist/ not built)'}`);
 });

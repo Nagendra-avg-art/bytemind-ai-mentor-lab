@@ -39,7 +39,10 @@ export async function executeRevisionPlan({
 
   let contextBlock = '';
   if (hasDocument && context) {
-    contextBlock = `
+    if (context.includes('STUDENT MATERIAL')) {
+      contextBlock = context;
+    } else {
+      contextBlock = `
 === RETRIEVED STUDY MATERIAL (From: ${relevantDocument || 'Uploaded Notes'}) ===
 ${context}
 ================================================================================
@@ -47,6 +50,7 @@ GROUNDING INSTRUCTIONS:
 - Identify high-probability exam concepts and theorems directly from the notes above.
 - Extract common pitfalls, corner cases, and definitions tested in this syllabus.
 `;
+    }
   } else {
     contextBlock = `
 === GENERAL COMPUTER SCIENCE REVISION CONTEXT ===

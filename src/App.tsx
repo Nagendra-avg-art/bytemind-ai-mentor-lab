@@ -114,6 +114,7 @@ export function App() {
   // Synchronous lock and in-flight duplicate tracker to prevent rapid repeated clicks
   const isSubmittingRef = useRef<boolean>(false);
   const inFlightQuestionRef = useRef<string | null>(null);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
 
   // Sync messages to sessionStorage whenever they change
   useEffect(() => {
@@ -255,6 +256,10 @@ export function App() {
         text: response.answer,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isImage: true,
+        provider: response.provider,
+        model: response.model,
+        executionMs: response.executionMs,
+        isLocalAI: response.localAI,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -351,6 +356,13 @@ export function App() {
     isSubmittingRef.current = true;
     inFlightQuestionRef.current = currentQuestion;
 
+    // Abort any existing in-flight request to ensure 1 action -> 1 request
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
+
     // Create user message entry
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -365,6 +377,7 @@ export function App() {
     setMessages((prev) => [...prev, userMsg]);
     setQuestion('');
     setIsLoading(true);
+    setLoadingStatusText('Thinking...');
     setErrorMessage(null);
 
     let phaseTimer: NodeJS.Timeout | null = null;
@@ -394,13 +407,21 @@ export function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           sources: response.sources,
           isRag: true,
+          provider: response.provider,
+          model: response.model,
+          executionMs: response.executionMs,
+          isLocalAI: response.localAI,
         };
 
         setMessages((prev) => [...prev, assistantMsg]);
       } else {
         setLoadingStatusText('Thinking...');
-        // Standard General CS Mentor Ask
-        const response = await sendPromptToAI(currentQuestion, interactionId || undefined);
+        // Standard General CS Mentor Ask with timeout & abort protection
+        const response = await sendPromptToAI(
+          currentQuestion,
+          interactionId || undefined,
+          abortController.signal
+        );
 
         if (response.interactionId) {
           setInteractionId(response.interactionId);
@@ -412,19 +433,29 @@ export function App() {
           text: response.answer,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isRag: false,
+          provider: response.provider,
+          model: response.model,
+          executionMs: response.executionMs,
+          isLocalAI: response.localAI,
         };
 
         setMessages((prev) => [...prev, assistantMsg]);
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'An unexpected error occurred';
-      setErrorMessage(msg);
+      const technicalMsg = error instanceof Error ? error.message : 'An unexpected error occurred';
+      const studentMsg = "ByteMind couldn't complete that response. Please try again.";
+      // Requirement 7: Clean Student Mode message, technical error in Developer Mode
+      setErrorMessage(isDevMode ? technicalMsg : studentMsg);
     } finally {
+      // Requirement 5: Guaranteed reset in all scenarios (success, error, timeout, network failure)
       if (phaseTimer) clearTimeout(phaseTimer);
       setLoadingStatusText(null);
       setIsLoading(false);
       isSubmittingRef.current = false;
       inFlightQuestionRef.current = null;
+      if (activeAbortControllerRef.current === abortController) {
+        activeAbortControllerRef.current = null;
+      }
     }
   };
 
@@ -623,7 +654,7 @@ export function App() {
           <div className="dev-header-banner">
             <h1 className="dev-app-title">ByteMind Engineering Console</h1>
             <p className="dev-app-subtitle">
-              Inspect Vector Storage, 768-D Embeddings, Semantic Search Cosine Scores & Gemini Interactions.
+              Configured AI Provider Architecture • Ollama (Local) / Groq (Render Cloud) / Gemini • Vector Store
             </p>
           </div>
         )}
@@ -1080,7 +1111,7 @@ export function App() {
         <p>
           {isDevMode ? (
             <>
-              🧠 <strong>ByteMind AI Mentor:</strong> Gemini 3.6 Flash • 768-D Embeddings • Vector Store • Developer Mode
+              🧠 <strong>AI Provider:</strong> Ollama • <strong>Model:</strong> qwen3:4b • <strong>Vision:</strong> qwen3-vl:4b • <strong>Embeddings:</strong> qwen3-embedding:0.6b
             </>
           ) : (
             <>

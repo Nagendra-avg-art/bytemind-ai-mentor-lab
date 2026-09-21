@@ -171,12 +171,13 @@ export async function saveDocumentAndChunks({
     throw new Error('No chunks with embeddings provided to save.');
   }
 
-  // Strict validation of vector dimensions (768)
+  // Dynamic validation of vector dimensions
+  const expectedDim = chunksWithEmbeddings[0]?.embedding?.length;
   for (let i = 0; i < chunksWithEmbeddings.length; i++) {
     const c = chunksWithEmbeddings[i];
-    if (!c.embedding || !Array.isArray(c.embedding) || c.embedding.length !== EXPECTED_VECTOR_DIMENSIONS) {
+    if (!c.embedding || !Array.isArray(c.embedding) || c.embedding.length !== expectedDim) {
       throw new Error(
-        `Invalid embedding dimension at chunk ${i} (${c.chunkId || 'unknown'}). Expected ${EXPECTED_VECTOR_DIMENSIONS}, received ${c.embedding?.length || 0}.`
+        `Invalid embedding dimension at chunk ${i} (${c.chunkId || 'unknown'}). Expected ${expectedDim}, received ${c.embedding?.length || 0}.`
       );
     }
   }
@@ -271,10 +272,8 @@ export async function searchVectorChunks({
   documentId,
   threshold = 0.0,
 }) {
-  if (!Array.isArray(queryEmbedding) || queryEmbedding.length !== EXPECTED_VECTOR_DIMENSIONS) {
-    throw new Error(
-      `Invalid query embedding dimension. Expected ${EXPECTED_VECTOR_DIMENSIONS}, received ${queryEmbedding?.length || 0}.`
-    );
+  if (!Array.isArray(queryEmbedding) || queryEmbedding.length === 0) {
+    throw new Error('Invalid query embedding: expected non-empty array of vector values.');
   }
 
   const sanitizedTopK = Math.max(1, Number.isInteger(topK) ? topK : 3);
@@ -341,6 +340,7 @@ export async function searchVectorChunks({
   const scored = [];
   for (const chunk of targetChunks) {
     if (!chunk.embedding || !Array.isArray(chunk.embedding)) continue;
+    if (chunk.embedding.length !== queryEmbedding.length) continue;
     const sim = cosineSimilarity(queryEmbedding, chunk.embedding);
     if (sim >= threshold) {
       scored.push({
@@ -351,6 +351,8 @@ export async function searchVectorChunks({
         page: chunk.page || null,
         content: chunk.text,
         similarity: Number(sim.toFixed(4)),
+        embeddingProvider: chunk.embeddingProvider,
+        embeddingModel: chunk.embeddingModel,
       });
     }
   }

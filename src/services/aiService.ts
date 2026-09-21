@@ -34,11 +34,28 @@ interface ApiErrorResponse {
  */
 export async function sendPromptToAI(
   prompt: string,
-  interactionId?: string
+  interactionId?: string,
+  externalSignal?: AbortSignal
 ): Promise<AskAIResponse> {
   const trimmedPrompt = prompt.trim();
   if (!trimmedPrompt) {
     throw new Error('Please enter a question before asking AI.');
+  }
+
+  // 245s frontend timeout guard (slightly above 240s server timeout)
+  const timeoutController = new AbortController();
+  const timeoutTimer = setTimeout(() => {
+    timeoutController.abort(new Error('LOCAL_AI_TIMEOUT'));
+  }, 245000);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutTimer);
+      throw new Error('Request was cancelled.');
+    }
+    externalSignal.addEventListener('abort', () => {
+      timeoutController.abort(externalSignal.reason);
+    });
   }
 
   try {
@@ -56,15 +73,19 @@ export async function sendPromptToAI(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(requestBody),
+      signal: timeoutController.signal,
     });
 
-    const data: (AskAIResponse & ApiErrorResponse) = await response.json().catch(() => ({
+    const data: (AskAIResponse & ApiErrorResponse & { message?: string }) = await response.json().catch(() => ({
       error: `Server returned non-JSON response with HTTP status ${response.status}`,
     }));
 
     if (!response.ok) {
-      const serverErrorMessage = data.error || `Request failed with HTTP status ${response.status}`;
-      throw new Error(serverErrorMessage);
+      const serverErrorMessage = data.message || data.error || `Request failed with HTTP status ${response.status}`;
+      const err = new Error(serverErrorMessage);
+      (err as any).statusCode = response.status;
+      (err as any).serverData = data;
+      throw err;
     }
 
     if (!data.answer) {
@@ -74,9 +95,21 @@ export async function sendPromptToAI(
     return {
       answer: data.answer,
       interactionId: data.interactionId || '',
+      provider: data.provider,
+      model: data.model,
+      executionMs: data.executionMs,
+      localAI: data.localAI,
     };
-  } catch (error) {
+  } catch (error: any) {
+    if (timeoutController.signal.aborted || error?.name === 'AbortError' || error?.message?.includes('LOCAL_AI_TIMEOUT')) {
+      const timeoutErr = new Error("ByteMind local AI took too long to respond.");
+      (timeoutErr as any).statusCode = 504;
+      (timeoutErr as any).code = 'LOCAL_AI_TIMEOUT';
+      throw timeoutErr;
+    }
     handleApiFetchError(error);
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 
@@ -96,6 +129,12 @@ export async function sendRAGPromptToAI(
   if (!trimmedPrompt) {
     throw new Error('Please enter a question before asking AI.');
   }
+
+  // 245s frontend timeout guard (slightly above 240s server timeout)
+  const timeoutController = new AbortController();
+  const timeoutTimer = setTimeout(() => {
+    timeoutController.abort(new Error('LOCAL_AI_TIMEOUT'));
+  }, 245000);
 
   try {
     const requestBody: {
@@ -125,15 +164,19 @@ export async function sendRAGPromptToAI(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(requestBody),
+      signal: timeoutController.signal,
     });
 
-    const data: (RAGAskResponse & ApiErrorResponse) = await response.json().catch(() => ({
+    const data: (RAGAskResponse & ApiErrorResponse & { message?: string }) = await response.json().catch(() => ({
       error: `Server returned non-JSON response with HTTP status ${response.status}`,
     }));
 
     if (!response.ok) {
-      const serverErrorMessage = data.error || `Request failed with HTTP status ${response.status}`;
-      throw new Error(serverErrorMessage);
+      const serverErrorMessage = data.message || data.error || `Request failed with HTTP status ${response.status}`;
+      const err = new Error(serverErrorMessage);
+      (err as any).statusCode = response.status;
+      (err as any).serverData = data;
+      throw err;
     }
 
     if (!data.answer) {
@@ -145,9 +188,21 @@ export async function sendRAGPromptToAI(
       answer: data.answer,
       interactionId: data.interactionId || '',
       sources: data.sources || [],
+      provider: data.provider,
+      model: data.model,
+      executionMs: data.executionMs,
+      localAI: data.localAI,
     };
-  } catch (error) {
+  } catch (error: any) {
+    if (timeoutController.signal.aborted || error?.name === 'AbortError' || error?.message?.includes('LOCAL_AI_TIMEOUT')) {
+      const timeoutErr = new Error("ByteMind local AI took too long to respond.");
+      (timeoutErr as any).statusCode = 504;
+      (timeoutErr as any).code = 'LOCAL_AI_TIMEOUT';
+      throw timeoutErr;
+    }
     handleApiFetchError(error);
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 
@@ -204,6 +259,10 @@ export async function sendImagePromptToAI(
       success: data.success ?? true,
       answer: data.answer,
       interactionId: data.interactionId || '',
+      provider: data.provider,
+      model: data.model,
+      executionMs: data.executionMs,
+      localAI: data.localAI,
     };
   } catch (error) {
     handleApiFetchError(error);
@@ -229,6 +288,12 @@ export async function sendAgentGoal(
     throw new Error('Please enter a learning goal before asking the Learning Coach.');
   }
 
+  // 125s frontend timeout guard (slightly above 120s server timeout)
+  const timeoutController = new AbortController();
+  const timeoutTimer = setTimeout(() => {
+    timeoutController.abort(new Error('LOCAL_AI_TIMEOUT'));
+  }, 125000);
+
   try {
     const requestBody: {
       goal: string;
@@ -251,6 +316,7 @@ export async function sendAgentGoal(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(requestBody),
+      signal: timeoutController.signal,
     });
 
     const data: (AgentResponse & ApiErrorResponse) = await response.json().catch(() => ({
@@ -263,8 +329,16 @@ export async function sendAgentGoal(
     }
 
     return data;
-  } catch (error) {
+  } catch (error: any) {
+    if (timeoutController.signal.aborted || error?.name === 'AbortError' || error?.message?.includes('LOCAL_AI_TIMEOUT')) {
+      const timeoutErr = new Error("Learning Agent request timed out. Please try again.");
+      (timeoutErr as any).statusCode = 504;
+      (timeoutErr as any).code = 'TIMEOUT';
+      throw timeoutErr;
+    }
     handleApiFetchError(error);
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 

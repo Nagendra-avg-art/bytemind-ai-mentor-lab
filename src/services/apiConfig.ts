@@ -45,14 +45,17 @@ export function isNetworkError(error: unknown): boolean {
     // Safari/iOS: "Load failed"
     return true;
   }
-  if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'NetworkError')) {
+  if (error instanceof DOMException && error.name === 'NetworkError') {
     return true;
   }
   if (error instanceof Error) {
+    if (error.name === 'AbortError' || error.message.toLowerCase().includes('aborted') || error.message.toLowerCase().includes('timeout')) {
+      return false;
+    }
     const msg = error.message.toLowerCase();
     if (
       msg.includes('failed to fetch') ||
-      msg.includes('network') ||
+      msg.includes('networkerror') ||
       msg.includes('load failed') ||
       msg.includes('econnrefused') ||
       msg.includes('connection refused')

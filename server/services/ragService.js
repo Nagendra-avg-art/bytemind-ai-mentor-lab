@@ -23,15 +23,26 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { BYTEMIND_MENTOR_SYSTEM_INSTRUCTION } from '../prompts/mentorPrompt.js';
-import { generateEmbedding, hasEmbeddedChunks } from '../utils/embeddingService.js';
-import { searchVectorChunks, isDbConfigured } from '../db/vectorStore.js';
+import { BYTEMIND_MENTOR_SYSTEM_INSTRUCTION, LOCAL_BYTEMIND_RAG_SYSTEM_INSTRUCTION } from '../prompts/mentorPrompt.js';
+import {
+  generateEmbedding,
+  hasEmbeddedChunks,
+  hasEmbeddedDocument,
+  embedChunks,
+  getDocumentChunks,
+  getEmbeddedDocument,
+  getAllRawChunks,
+} from '../utils/embeddingService.js';
+import { searchVectorChunks, isDbConfigured, saveDocumentAndChunks } from '../db/vectorStore.js';
 import {
   DEFAULT_SIMILARITY_THRESHOLD,
   DEFAULT_TOP_K,
   MAX_TOP_K,
 } from '../config/ragConfig.js';
 import { assembleRAGContext } from '../utils/contextAssembly.js';
+import { searchLexicalBM25 } from '../utils/lexicalSearch.js';
+import { getActiveProvider, getActiveProviderName } from '../providers/index.js';
+import { getOrCreateSession, getSessionHistory, recordTurn } from './sessionService.js';
 
 /**
  * Initializes GoogleGenAI client with the server-side API key.
@@ -246,13 +257,47 @@ export async function answerWithRAG(question, options = {}) {
   }
 
   // 3. Determine similarity threshold (centralized default with optional override)
+  const activeProvider = getActiveProvider();
+  const activeProviderName = getActiveProviderName();
+
+  // Threshold: allow override; defaults to 0.40 for vector, 0.20 for lexical BM25
   const threshold =
     options.threshold !== undefined && !isNaN(Number(options.threshold))
       ? Number(options.threshold)
+      : activeProviderName === 'groq'
+      ? 0.20
       : DEFAULT_SIMILARITY_THRESHOLD;
 
-  // 4. Pre-check: Ensure at least one embedded document exists in storage
-  if (!isDbConfigured() && !hasEmbeddedChunks()) {
+  // If specific document was requested, ensure it is indexed for activeProvider (vector providers only)
+  if (activeProviderName !== 'groq' && documentId && typeof documentId === 'string' && documentId.trim()) {
+    const cleanId = documentId.trim();
+    if (!hasEmbeddedDocument(cleanId, activeProviderName)) {
+      const rawChunks = getDocumentChunks(cleanId);
+      if (Array.isArray(rawChunks) && rawChunks.length > 0) {
+        console.log(`[RAG] Document "${cleanId}" exists in raw chunks but not indexed for ${activeProviderName}. Indexing with ${activeProviderName}...`);
+        const reIndexed = await embedChunks(rawChunks, cleanId);
+        await saveDocumentAndChunks({
+          filename: cleanId,
+          pageCount: rawChunks[0]?.pageCount || 1,
+          textLength: rawChunks.reduce((sum, c) => sum + (c.charCount || c.text?.length || 0), 0),
+          chunksWithEmbeddings: reIndexed,
+        });
+      }
+    }
+  }
+
+  // 4. Pre-check: Ensure study documents exist in storage for active provider
+  if (activeProviderName === 'groq') {
+    if (!hasEmbeddedChunks('groq')) {
+      return {
+        success: true,
+        answer:
+          'No study documents were found in memory. Please upload a study document (PDF) first before asking questions in Document Grounded mode.',
+        interactionId: interactionId || '',
+        sources: [],
+      };
+    }
+  } else if (!isDbConfigured() && !hasEmbeddedChunks(activeProviderName)) {
     return {
       success: true,
       answer:
@@ -263,24 +308,54 @@ export async function answerWithRAG(question, options = {}) {
   }
 
   const totalStart = performance.now();
+  let rankedChunks = [];
+  let retrievalStrategy = 'dense_vector';
 
-  // 5. Generate 768-D query embedding for the student's question
-  const queryEmbedStart = performance.now();
-  const queryEmbedding = await generateEmbedding(trimmedQuestion);
-  const queryEmbeddingMs = Math.round(performance.now() - queryEmbedStart);
-  console.log(`[RAG] query embedding: ${queryEmbeddingMs}ms`);
+  // 5. Dual Retrieval Strategy:
+  // - Local Ollama: qwen3-embedding:0.6b dense vector similarity
+  // - Groq / Render: provider-independent lexical / BM25 keyword retrieval over extracted chunks
+  if (activeProviderName === 'groq') {
+    retrievalStrategy = 'lexical_bm25';
+    const lexicalStart = performance.now();
 
-  // 6. Perform vector search (via PostgreSQL/pgvector if configured, or in-memory fallback)
-  // Retrieve top candidates with threshold 0.0 to inspect similarity distribution
-  const searchStart = performance.now();
-  const rankedChunks = await searchVectorChunks({
-    queryEmbedding,
-    topK: parsedTopK,
-    documentId: documentId ? documentId.trim() : undefined,
-    threshold: 0.0,
-  });
-  const searchMs = Math.round(performance.now() - searchStart);
-  console.log(`[RAG] semantic search: ${searchMs}ms`);
+    let candidateChunks = [];
+    if (documentId && typeof documentId === 'string' && documentId.trim()) {
+      const cleanId = documentId.trim();
+      candidateChunks =
+        getDocumentChunks(cleanId) ||
+        getDocumentChunks(cleanId.replace(/\.pdf$/, '')) ||
+        getDocumentChunks(`${cleanId}.pdf`) ||
+        [];
+    } else {
+      candidateChunks = getAllRawChunks();
+    }
+
+    rankedChunks = searchLexicalBM25({
+      query: trimmedQuestion,
+      chunks: candidateChunks,
+      topK: parsedTopK,
+      threshold: 0.0, // retrieve top candidates to evaluate top similarity
+    });
+
+    const lexicalMs = Math.round(performance.now() - lexicalStart);
+    console.log(`[RAG] lexical BM25 retrieval (${candidateChunks.length} chunks searched): ${lexicalMs}ms`);
+  } else {
+    // Dense Vector Search (Ollama or Gemini)
+    const queryEmbedStart = performance.now();
+    const queryEmbedding = await generateEmbedding(trimmedQuestion);
+    const queryEmbeddingMs = Math.round(performance.now() - queryEmbedStart);
+    console.log(`[RAG] query embedding (${activeProviderName}, ${queryEmbedding.length}D): ${queryEmbeddingMs}ms`);
+
+    const searchStart = performance.now();
+    rankedChunks = await searchVectorChunks({
+      queryEmbedding,
+      topK: parsedTopK,
+      documentId: documentId ? documentId.trim() : undefined,
+      threshold: 0.0,
+    });
+    const searchMs = Math.round(performance.now() - searchStart);
+    console.log(`[RAG] semantic search: ${searchMs}ms`);
+  }
 
   // Handle case: no chunks matched the documentId filter or empty storage
   if (!rankedChunks || rankedChunks.length === 0) {
@@ -304,9 +379,9 @@ export async function answerWithRAG(question, options = {}) {
   const topSimilarity = topMatch.similarity;
 
   if (topSimilarity < threshold) {
-    // Insufficient relevance: DO NOT CALL GEMINI to save quota and eliminate hallucinations
+    // Insufficient relevance: DO NOT CALL AI MODEL to save quota/time and eliminate hallucinations
     const totalMs = Math.round(performance.now() - totalStart);
-    console.log(`[RAG] total: ${totalMs}ms (below similarity threshold)`);
+    console.log(`[RAG] total: ${totalMs}ms (below similarity threshold ${(topSimilarity * 100).toFixed(1)}% < ${(threshold * 100).toFixed(1)}%)`);
     const docName = topMatch.filename || documentId || 'your uploaded notes';
     return {
       success: true,
@@ -338,14 +413,51 @@ export async function answerWithRAG(question, options = {}) {
       chunkIndex: chunk.chunkIndex,
       page: chunk.page !== undefined ? chunk.page : null,
       similarity: Number(chunk.similarity.toFixed(4)),
-      textPreview: preview.replace(/\s+/g, ' ').trim(),
+      embeddingProvider: activeProviderName === 'groq' ? null : (chunk.embeddingProvider || activeProviderName),
+      embeddingModel: activeProviderName === 'groq' ? null : (chunk.embeddingModel || (activeProviderName === 'ollama' ? (process.env.OLLAMA_EMBED_MODEL || 'qwen3-embedding:0.6b') : undefined)),
+      retrievalStrategy,
     };
   });
 
-  // 10. Assemble standardized, grounded context for Gemini
+  // 10. Assemble standardized, grounded context for AI model
   const augmentedPrompt = assembleRAGContext(relevantChunks, trimmedQuestion);
 
-  // 11. Query Gemini with multi-turn conversation memory support
+  // 11. Query AI Provider (Ollama qwen3:4b by default, Groq on Render, Gemini as optional fallback)
+  if (activeProviderName !== 'gemini') {
+    const session = getOrCreateSession(interactionId);
+    const history = getSessionHistory(session.id);
+
+    const systemInstruction = activeProvider.name === 'ollama'
+      ? LOCAL_BYTEMIND_RAG_SYSTEM_INSTRUCTION
+      : BYTEMIND_MENTOR_SYSTEM_INSTRUCTION;
+
+    const result = await activeProvider.chat({
+      prompt: augmentedPrompt,
+      systemInstruction,
+      history,
+    });
+
+    recordTurn(session.id, trimmedQuestion, result.text);
+
+    const totalMs = Math.round(performance.now() - totalStart);
+    console.log(`[RAG] ${activeProvider.name} generation finished in ${totalMs}ms`);
+
+    return {
+      success: true,
+      answer: result.text,
+      interactionId: session.id,
+      sources,
+      provider: activeProvider.name,
+      model: result.model,
+      executionMs: result.metadata?.executionMs ?? totalMs,
+      localAI: activeProvider.name === 'ollama',
+      retrievalStrategy,
+      embeddingProvider: activeProviderName === 'groq' ? null : activeProviderName,
+      embeddingModel: activeProviderName === 'groq' ? null : (process.env.OLLAMA_EMBED_MODEL || 'qwen3-embedding:0.6b'),
+    };
+  }
+
+  // Gemini Provider Flow
   const client = getGenAIClient();
   const interactionParams = {
     model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
@@ -374,5 +486,9 @@ export async function answerWithRAG(question, options = {}) {
     answer: interaction.output_text,
     interactionId: interaction.id,
     sources: sources,
+    provider: 'gemini',
+    model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+    executionMs: totalMs,
+    localAI: false,
   };
 }
