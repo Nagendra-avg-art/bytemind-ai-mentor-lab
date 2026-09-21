@@ -1,0 +1,102 @@
+/* ==========================================================================
+   index.css - Dark Premium Global Design Tokens & Mobile Resets
+   ByteMind AI Mentor: See. Ask. Learn.
+   ========================================================================== */
+
+:root {
+  /* Dark Premium AI Palette */
+  --bg-color: #080c16;
+  --bg-surface: #0d1527;
+  --card-bg: #111a2e;
+  --card-bg-elevated: #15223c;
+  --card-bg-hover: #1a2948;
+
+  /* Accent Colors */
+  --primary-color: #06b6d4;
+  --primary-hover: #0891b2;
+  --primary-light: rgba(6, 182, 212, 0.12);
+  --accent-cyan: #06b6d4;
+  --accent-blue: #38bdf8;
+  --accent-indigo: #6366f1;
+  --accent-purple: #8b5cf6;
+  --accent-emerald: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-rose: #f43f5e;
+
+  /* Text Hierarchy */
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+
+  /* Borders & Focus */
+  --border-color: rgba(56, 189, 248, 0.14);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-glow: rgba(56, 189, 248, 0.35);
+  --focus-ring: rgba(6, 182, 212, 0.4);
+
+  /* Rounded Radii */
+  --border-radius: 16px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+
+  /* Shadows & Glows */
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 28px -4px rgba(0, 0, 0, 0.6);
+  --glow-cyan: 0 0 25px -4px rgba(6, 182, 212, 0.25);
+  --glow-purple: 0 0 25px -4px rgba(139, 92, 246, 0.25);
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', Helvetica, Arial, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+/* Ensure mobile touch targets (at least 48px) for comfortable thumb tapping */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: 16px; /* 16px prevents iOS/Android browsers from auto-zooming on focus */
+}
+
+/* Custom scrollbars for dark mode */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-color);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.3);
+}
