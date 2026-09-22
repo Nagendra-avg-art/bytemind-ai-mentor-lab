@@ -265,7 +265,7 @@ export async function answerWithRAG(question, options = {}) {
     options.threshold !== undefined && !isNaN(Number(options.threshold))
       ? Number(options.threshold)
       : activeProviderName === 'groq'
-      ? 0.20
+      ? 0.15
       : DEFAULT_SIMILARITY_THRESHOLD;
 
   // If specific document was requested, ensure it is indexed for activeProvider (vector providers only)

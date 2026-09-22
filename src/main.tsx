@@ -16,6 +16,8 @@ import './index.css';
  * 4. It imports global stylesheet `index.css`.
  */
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 const rootElement = document.getElementById('root');
 
 if (!rootElement) {
@@ -24,6 +26,8 @@ if (!rootElement) {
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary fallbackTitle="ByteMind encountered an unexpected error">
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 );

@@ -22,8 +22,22 @@ const STOP_WORDS = new Set([
   'under', 'until', 'up', 'very', 'was', 'wasn\'t', 'we', 'we\'d', 'we\'ll', 'we\'re', 'we\'ve', 'were',
   'weren\'t', 'what', 'what\'s', 'when', 'when\'s', 'where', 'where\'s', 'which', 'while', 'who', 'who\'s',
   'whom', 'why', 'why\'s', 'with', 'won\'t', 'would', 'wouldn\'t', 'you', 'you\'d', 'you\'ll', 'you\'re',
-  'you\'ve', 'your', 'yours', 'yourself', 'yourselves'
+  'you\'ve', 'your', 'yours', 'yourself', 'yourselves',
+  // Educational conversational stop words
+  'according', 'notes', 'tell', 'show', 'please', 'material', 'document', 'mention', 'say'
 ]);
+
+/**
+ * Lightweight word stemmer for common English suffixes.
+ * @param {string} word
+ * @returns {string}
+ */
+export function stem(word) {
+  if (!word || typeof word !== 'string' || word.length <= 3) return word;
+  return word
+    .replace(/(?:ing|edly|ingly|ed|es|s)$/, '')
+    .replace(/(?:tion|tional|ment|ments)$/, '');
+}
 
 /**
  * Tokenizes text into lowercase alphanumeric words, filtering punctuation and stop words.
@@ -63,17 +77,16 @@ export function tokenize(text) {
  * @param {object} params
  * @param {string} params.query - Search query
  * @param {Array<any>} params.chunks - Candidate chunks to rank
- * @param {number} [params.topK=3] - Maximum chunks to return
- * @param {number} [params.threshold=0.0] - Minimum similarity score
+ * @param {number} [params.topK=3] - Max chunks to return
+ * @param {number} [params.threshold=0.0] - Minimum similarity threshold
  * @param {number} [params.k1=1.5]
  * @param {number} [params.b=0.75]
- * 
  * @returns {Array<{
  *   chunkId: string,
  *   documentId: string,
  *   filename: string,
  *   chunkIndex: number,
- *   page: number | null,
+ *   page: number|null,
  *   content: string,
  *   text: string,
  *   similarity: number,
@@ -116,6 +129,10 @@ export function searchLexicalBM25({
 
     for (const token of tokens) {
       freqMap.set(token, (freqMap.get(token) || 0) + 1);
+      const st = stem(token);
+      if (st && st !== token) {
+        freqMap.set(st, (freqMap.get(st) || 0) + 1);
+      }
     }
 
     chunkTokenFreqs.push(freqMap);
@@ -130,9 +147,10 @@ export function searchLexicalBM25({
   const idfMap = new Map();
   for (const qTerm of queryTokens) {
     if (idfMap.has(qTerm)) continue;
+    const qStem = stem(qTerm);
     let df = 0;
     for (let i = 0; i < N; i++) {
-      if (chunkTokenFreqs[i].has(qTerm)) {
+      if (chunkTokenFreqs[i].has(qTerm) || (qStem && chunkTokenFreqs[i].has(qStem))) {
         df++;
       }
     }
@@ -162,7 +180,8 @@ export function searchLexicalBM25({
     let matchedTerms = 0;
 
     for (const qTerm of queryTokens) {
-      const tf = freqMap.get(qTerm) || 0;
+      const qStem = stem(qTerm);
+      const tf = freqMap.get(qTerm) || (qStem ? freqMap.get(qStem) : 0) || 0;
       if (tf > 0) {
         matchedTerms++;
         const idf = idfMap.get(qTerm) || 0.1;

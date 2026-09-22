@@ -2,11 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { QuestionInput, VoiceState } from './components/QuestionInput';
 import { ResponseDisplay } from './components/ResponseDisplay';
 import { DocumentUpload } from './components/DocumentUpload';
-import { ImageMentor } from './components/ImageMentor';
-import { LearningCoach } from './components/LearningCoach';
 import { StudentHome, StudyMaterial, DEFAULT_STUDY_MATERIALS } from './components/StudentHome';
-import { ClassroomAssistant } from './components/ClassroomAssistant';
-import { LocalAiLabPanel } from './components/LocalAiLabPanel';
+import { TeacherHub } from './components/TeacherHub';
+import { SharedArtifactViewer } from './components/SharedArtifactViewer';
+import { endAssessmentSessionApi } from './services/teacherService';
 import {
   sendPromptToAI,
   sendRAGPromptToAI,
@@ -14,7 +13,9 @@ import {
   sendAgentGoal,
 } from './services/aiService';
 import { optimizeImageForUpload, ImageOptimizationResult } from './utils/imageOptimizer';
-import { ChatMessage, AgentResponse } from './types';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { CoachActionModal, CoachActionType } from './components/CoachActionModal';
+import { ChatMessage } from './types';
 import './App.css';
 
 /**
@@ -23,6 +24,57 @@ import './App.css';
 const SESSION_INTERACTION_KEY = 'bytemind_interaction_id';
 const SESSION_CHAT_KEY = 'bytemind_chat_history';
 const STORAGE_CUSTOM_DOCS_KEY = 'bytemind_custom_docs';
+
+/**
+ * Extracts any deep-linked shareId from window.location pathname, query, or hash
+ */
+function getInitialShareId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const path = window.location.pathname;
+  if (path.startsWith('/share/')) {
+    const id = path.replace(/^\/share\//, '').split('/')[0].trim();
+    if (id) return id;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const qShare = params.get('share');
+  if (qShare) return qShare.trim();
+
+  const hash = window.location.hash;
+  if (hash.startsWith('#share/')) {
+    return hash.replace(/^#share\//, '').split('/')[0].trim();
+  }
+  return null;
+}
+
+/**
+ * Extracts initial role from window.location pathname, query, or hash.
+ * Teachers access ByteMind at /teacher, /teacher-hub, or ?role=teacher.
+ * Default role is 'student'.
+ */
+function getInitialRole(): 'teacher' | 'student' {
+  if (typeof window === 'undefined') return 'student';
+  const path = window.location.pathname.toLowerCase();
+  const params = new URLSearchParams(window.location.search);
+  const hash = window.location.hash.toLowerCase();
+
+  // If opening /share/..., always student mode
+  if (path.startsWith('/share/') || params.has('share') || hash.startsWith('#share/')) {
+    return 'student';
+  }
+
+  // Teacher route
+  if (
+    path.startsWith('/teacher') ||
+    path.startsWith('/teacher-hub') ||
+    params.get('role') === 'teacher' ||
+    params.has('teacher') ||
+    hash.startsWith('#teacher')
+  ) {
+    return 'teacher';
+  }
+
+  return 'student';
+}
 
 /**
  * Safely load initial messages from sessionStorage
@@ -71,16 +123,29 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(loadInitialMessages);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [chatMode, setChatMode] = useState<'general' | 'rag' | 'image' | 'agent' | 'classroom' | 'local-ai'>('general');
-  const [appViewMode, setAppViewMode] = useState<'student' | 'classroom'>('student');
+  const [chatMode, setChatMode] = useState<'general' | 'rag' | 'image' | 'agent' | 'classroom'>('general');
+  const [role, setRole] = useState<'teacher' | 'student'>(getInitialRole);
+  const [activeShareId, setActiveShareId] = useState<string | null>(getInitialShareId);
+  const [showShareModal, setShowShareModal] = useState<boolean>(false);
+  const [shareInputText, setShareInputText] = useState<string>('');
   const [selectedDocumentId, setSelectedDocumentId] = useState<string>('');
   const [activeImageFile, setActiveImageFile] = useState<File | null>(null);
   const [optimizedImageResult, setOptimizedImageResult] = useState<ImageOptimizationResult | null>(null);
   const [loadingStatusText, setLoadingStatusText] = useState<string | null>(null);
-  const [lastAgentResult, setLastAgentResult] = useState<AgentResponse | null>(null);
   const [customDocuments, setCustomDocuments] = useState<StudyMaterial[]>(loadCustomDocs);
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
   const [showImageSourcePicker, setShowImageSourcePicker] = useState<boolean>(false);
+  const [coachModalAction, setCoachModalAction] = useState<CoachActionType | null>(null);
+
+  // Synchronize role and activeShareId with browser history (back/forward navigation)
+  useEffect(() => {
+    const handlePopState = () => {
+      setRole(getInitialRole());
+      setActiveShareId(getInitialShareId());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Voice state for synchronizing with StudentHome
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
@@ -89,27 +154,6 @@ export function App() {
   // Hidden inputs for camera capture & file picker
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
-
-  // Developer Mode toggle state (Default mode is Student Mode)
-  const [isDevMode, setIsDevMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('bytemind_dev_mode') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const handleToggleDevMode = () => {
-    setIsDevMode((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('bytemind_dev_mode', String(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  };
 
   // Synchronous lock and in-flight duplicate tracker to prevent rapid repeated clicks
   const isSubmittingRef = useRef<boolean>(false);
@@ -136,6 +180,15 @@ export function App() {
       console.error('Failed to save chat to sessionStorage', e);
     }
   }, [messages]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const shareId = getInitialShareId();
+      setActiveShareId(shareId);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Sync interactionId to sessionStorage whenever it changes
   useEffect(() => {
@@ -303,8 +356,6 @@ export function App() {
         interactionId: interactionId || undefined,
       });
 
-      setLastAgentResult(result);
-
       if (result.interactionId) {
         setInteractionId(result.interactionId);
       }
@@ -441,11 +492,9 @@ export function App() {
 
         setMessages((prev) => [...prev, assistantMsg]);
       }
-    } catch (error) {
-      const technicalMsg = error instanceof Error ? error.message : 'An unexpected error occurred';
-      const studentMsg = "ByteMind couldn't complete that response. Please try again.";
-      // Requirement 7: Clean Student Mode message, technical error in Developer Mode
-      setErrorMessage(isDevMode ? technicalMsg : studentMsg);
+    } catch (err: any) {
+      const msg = err?.message || err?.serverData?.message || 'ByteMind is temporarily unable to answer. Please try again.';
+      setErrorMessage(msg);
     } finally {
       // Requirement 5: Guaranteed reset in all scenarios (success, error, timeout, network failure)
       if (phaseTimer) clearTimeout(phaseTimer);
@@ -498,7 +547,6 @@ export function App() {
     setMessages([]);
     setErrorMessage(null);
     handleRemoveActiveImage();
-    setLastAgentResult(null);
     sessionStorage.removeItem(SESSION_INTERACTION_KEY);
     sessionStorage.removeItem(SESSION_CHAT_KEY);
   };
@@ -517,42 +565,15 @@ export function App() {
     }
   };
 
-  // Handle Learning Coach Quick Actions (Explain, Revise, Practice, Quiz)
-  const handleSelectCoachAction = async (actionType: 'Explain' | 'Revise' | 'Practice' | 'Quiz') => {
-    const docLabel = selectedDocumentId ? ` based on my notes (${selectedDocumentId})` : '';
+  // Open Learning Coach interactive configuration modal (Phase 8 UX)
+  const handleSelectCoachAction = (actionType: 'Explain' | 'Revise' | 'Practice' | 'Quiz') => {
+    setCoachModalAction(actionType);
+  };
 
-    switch (actionType) {
-      case 'Explain': {
-        const goal = question.trim()
-          ? `Explain ${question.trim()} clearly step by step${docLabel}`
-          : selectedDocumentId
-          ? `Explain the core concepts and key definitions in my study notes${docLabel}`
-          : 'Explain the difference between Stacks and Queues with real-world computer science examples';
-        await handleRunAgent(goal, selectedDocumentId || undefined);
-        break;
-      }
-      case 'Revise': {
-        const goal = selectedDocumentId
-          ? `Create a high-yield exam revision plan and formula checklist${docLabel}`
-          : 'Create a structured 3-day revision plan for Database Management Systems exams';
-        await handleRunAgent(goal, selectedDocumentId || undefined);
-        break;
-      }
-      case 'Practice': {
-        const goal = selectedDocumentId
-          ? `Give me 3 targeted practice exercises with step-by-step solutions${docLabel}`
-          : 'Give me 3 hands-on practice problems on binary search trees with solutions';
-        await handleRunAgent(goal, selectedDocumentId || undefined);
-        break;
-      }
-      case 'Quiz': {
-        const goal = selectedDocumentId
-          ? `Quiz me with 3 diagnostic multiple-choice questions to test my understanding${docLabel}`
-          : 'Quiz me with 3 multiple-choice concept questions on Computer Science fundamentals';
-        await handleRunAgent(goal, selectedDocumentId || undefined);
-        break;
-      }
-    }
+  // Launch Coach workflow with explicitly configured user goal
+  const handleStartCoachWorkflow = async (_action: CoachActionType, goalPrompt: string) => {
+    setCoachModalAction(null);
+    await handleRunAgent(goalPrompt, selectedDocumentId || undefined);
   };
 
   // Dynamic sample prompts for Student & Developer Modes
@@ -579,7 +600,7 @@ export function App() {
         ];
 
   return (
-    <div className={`app-layout ${isDevMode ? 'dev-mode-layout' : ''}`}>
+    <div className="app-layout">
       {/* Hidden file inputs for camera & gallery photo picker */}
       <input
         ref={cameraInputRef}
@@ -602,62 +623,72 @@ export function App() {
       {/* Top Header Navigation */}
       <header className="app-header">
         <div className="header-top-row">
-          <div className="brand-header-left">
+          <div
+            className="brand-header-left"
+            onClick={() => {
+              if (role === 'teacher') {
+                setRole('student');
+                setActiveShareId(null);
+                window.history.pushState({}, '', '/');
+              }
+            }}
+            style={{ cursor: role === 'teacher' ? 'pointer' : 'default' }}
+            title={role === 'teacher' ? 'Click to return to Student Mode' : 'ByteMind'}
+          >
             <span className="brand-mini-spark" aria-hidden="true">✨</span>
             <span className="brand-logo-text">ByteMind</span>
-            {isDevMode ? (
-              <span className="header-badge dev-badge">🛠️ Dev Mode</span>
-            ) : (
-              <div className="app-mode-selector" role="tablist" aria-label="Application View Mode">
-                <button
-                  type="button"
-                  className={`app-mode-pill ${appViewMode === 'student' ? 'active' : ''}`}
-                  onClick={() => setAppViewMode('student')}
-                  role="tab"
-                  aria-selected={appViewMode === 'student'}
-                  title="Student Learning Mentor Mode"
-                >
-                  🎓 Student
-                </button>
-                <button
-                  type="button"
-                  className={`app-mode-pill ${appViewMode === 'classroom' ? 'active' : ''}`}
-                  onClick={() => setAppViewMode('classroom')}
-                  role="tab"
-                  aria-selected={appViewMode === 'classroom'}
-                  title="Classroom Assistant: Turn class material into structured learning resources"
-                >
-                  🏫 Classroom
-                </button>
-              </div>
-            )}
           </div>
 
-          <div className="dev-settings-wrapper">
-            <button
-              type="button"
-              className={`dev-settings-btn ${isDevMode ? 'active' : ''}`}
-              onClick={handleToggleDevMode}
-              title={isDevMode ? 'Return to Student Mode' : 'Developer Tools & Diagnostics'}
-              aria-label={isDevMode ? 'Return to Student Mode' : 'Developer Tools'}
-            >
-              <span className="settings-icon" aria-hidden="true">⚙️</span>
-              <span className="settings-btn-text">
-                {isDevMode ? 'Exit Dev' : 'Dev'}
-              </span>
-            </button>
-          </div>
+          {role === 'teacher' ? (
+            <div className="app-mode-selector" role="tablist" aria-label="Teacher Hub Navigation">
+              <button
+                type="button"
+                className="app-mode-pill active"
+                role="tab"
+                aria-selected={true}
+                title="Teacher Hub Active"
+              >
+                👨‍🏫 Teacher
+              </button>
+            </div>
+          ) : (
+            <div className="app-mode-selector" role="tablist" aria-label="Student Navigation">
+              <button
+                type="button"
+                className={`app-mode-pill ${!activeShareId ? 'active' : ''}`}
+                onClick={() => {
+                  endAssessmentSessionApi();
+                  setActiveShareId(null);
+                  window.history.pushState({}, '', '/');
+                }}
+                role="tab"
+                aria-selected={!activeShareId}
+                title="Student Learning Mentor Mode"
+              >
+                🎓 Student
+              </button>
+              <button
+                type="button"
+                className={`app-mode-pill code-entry-pill ${activeShareId ? 'active' : ''}`}
+                onClick={() => setShowShareModal(true)}
+                title="Enter a teacher share code or scan QR"
+              >
+                🔗 {activeShareId ? `Code: ${activeShareId}` : 'Enter Code'}
+              </button>
+              <button
+                type="button"
+                className="app-mode-pill teacher-entry-pill"
+                onClick={() => {
+                  setRole('teacher');
+                  window.history.pushState({}, '', '/teacher');
+                }}
+                title="Navigate to Teacher Hub"
+              >
+                👨‍🏫 Teacher
+              </button>
+            </div>
+          )}
         </div>
-
-        {/* In Developer Mode: Display Technical Subtitle */}
-        {isDevMode && (
-          <div className="dev-header-banner">
-            <h1 className="dev-app-title">ByteMind Engineering Console</h1>
-            <p className="dev-app-subtitle">
-              Configured AI Provider Architecture • Ollama (Local) / Groq (Render Cloud) / Gemini • Vector Store
-            </p>
-          </div>
-        )}
       </header>
 
       {/* Camera / Image Source Picker Modal (Sheet) */}
@@ -710,7 +741,9 @@ export function App() {
         <div className="upload-modal-overlay" onClick={() => setShowUploadModal(false)}>
           <div className="upload-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">📄 Upload Course Study Material</h3>
+              <h3 className="modal-title">
+                {role === 'teacher' ? '📄 Upload Study Material for Notes / Assignment' : '📄 Upload Course Study Material'}
+              </h3>
               <button
                 type="button"
                 className="modal-close-btn"
@@ -721,42 +754,153 @@ export function App() {
               </button>
             </div>
             <p className="modal-subtitle">
-              Upload textbook chapters or lecture notes in PDF format. ByteMind will ground answers in your material.
+              {role === 'teacher'
+                ? 'Upload textbook chapters or lecture notes in PDF format. Students will be able to read and ask questions about these notes.'
+                : 'Upload textbook chapters or lecture notes in PDF format. ByteMind will ground answers in your material.'}
             </p>
-            <DocumentUpload onAskWithDocument={handleAskWithDocument} isDevMode={isDevMode} />
+            <ErrorBoundary fallbackTitle="Upload failed to load">
+              <DocumentUpload
+                isTeacherMode={role === 'teacher'}
+                onAskWithDocument={handleAskWithDocument}
+                onSelectForTeacher={(docId) => {
+                  setSelectedDocumentId(docId);
+                  setShowUploadModal(false);
+                  setCustomDocuments((prev) => {
+                    if (prev.some((d) => d.id === docId)) return prev;
+                    const cleanTitle = docId.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+                    const newDoc: StudyMaterial = {
+                      id: docId,
+                      title: cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1),
+                      subtitle: `Custom uploaded notes (${docId})`,
+                      icon: '📄',
+                      isCustom: true,
+                    };
+                    const updated = [newDoc, ...prev];
+                    try {
+                      localStorage.setItem(STORAGE_CUSTOM_DOCS_KEY, JSON.stringify(updated));
+                    } catch {
+                      // ignore
+                    }
+                    return updated;
+                  });
+                }}
+              />
+            </ErrorBoundary>
+          </div>
+        </div>
+      )}
+
+      {/* Learning Coach Configuration Modal (Phase 8 UX) */}
+      <CoachActionModal
+        isOpen={Boolean(coachModalAction)}
+        initialAction={coachModalAction || 'Explain'}
+        activeDocumentId={selectedDocumentId || null}
+        currentDraftQuestion={question}
+        isExecuting={isLoading && chatMode === 'agent'}
+        onClose={() => setCoachModalAction(null)}
+        onStartWorkflow={handleStartCoachWorkflow}
+      />
+
+      {/* Enter Share Code Modal */}
+      {showShareModal && (
+        <div className="upload-modal-overlay" onClick={() => setShowShareModal(false)}>
+          <div className="upload-modal-card share-code-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">🔗 Open Shared Learning Material</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowShareModal(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="modal-subtitle">
+              Enter the teacher's share code or URL to access notes, assignments, or quizzes.
+            </p>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                let code = shareInputText.trim();
+                if (!code) return;
+                if (code.includes('/share/')) {
+                  code = code.split('/share/')[1].split('?')[0].split('#')[0];
+                }
+                setActiveShareId(code);
+                setShowShareModal(false);
+                setShareInputText('');
+                window.history.pushState({}, '', `/share/${code}`);
+              }}
+              className="share-code-form"
+            >
+              <input
+                type="text"
+                className="teacher-input-text share-modal-input"
+                placeholder="e.g., BM-X7K29P"
+                value={shareInputText}
+                onChange={(e) => setShareInputText(e.target.value)}
+                autoFocus
+                required
+              />
+              <button type="submit" className="publish-submit-btn">
+                Open Material
+              </button>
+            </form>
           </div>
         </div>
       )}
 
       <main className="app-main">
         {/* ================================================================
-            CLASSROOM ASSISTANT VIEW (Turn class material into structured learning resources)
+            TEACHER ROLE: TEACHER HUB ONLY
             ================================================================ */}
-        {!isDevMode && appViewMode === 'classroom' ? (
-          <ClassroomAssistant
-            availableDocuments={[...customDocuments, ...DEFAULT_STUDY_MATERIALS]}
-            activeDocumentId={selectedDocumentId || null}
-            onSelectDocument={(id) => setSelectedDocumentId(id)}
-            onOpenUploadModal={() => setShowUploadModal(true)}
-            isDevMode={false}
-          />
-        ) : !isDevMode ? (
+        {role === 'teacher' ? (
+          <ErrorBoundary fallbackTitle="Teacher Hub encountered an issue">
+            <TeacherHub
+              availableDocuments={[...customDocuments, ...DEFAULT_STUDY_MATERIALS]}
+              activeDocumentId={selectedDocumentId || null}
+              onSelectDocument={(id) => setSelectedDocumentId(id)}
+              onOpenUploadModal={() => setShowUploadModal(true)}
+              onExitToStudent={() => {
+                setRole('student');
+                setActiveShareId(null);
+                window.history.pushState({}, '', '/');
+              }}
+            />
+          </ErrorBoundary>
+        ) : activeShareId ? (
           /* ================================================================
-              STUDENT MODE VIEW (Clean, phone-first, zero technical jargon)
+              STUDENT ROLE: SHARED ARTIFACT VIEW (/share/<shareId> or Enter Code)
+              ================================================================ */
+          <ErrorBoundary fallbackTitle="Shared learning material encountered an issue">
+            <SharedArtifactViewer
+              shareId={activeShareId}
+              onBackToStudent={() => {
+                endAssessmentSessionApi();
+                setActiveShareId(null);
+                window.history.pushState({}, '', '/');
+              }}
+            />
+          </ErrorBoundary>
+        ) : (
+          /* ================================================================
+              STUDENT ROLE: NORMAL STUDENT LEARNING MODE
               ================================================================ */
           <>
             {/* Fresh State: Show Full Phone-First Student Home */}
             {messages.length === 0 && !optimizedImageResult && (
-              <StudentHome
-                onTriggerCamera={handleTriggerCamera}
-                onTriggerVoice={handleTriggerVoice}
-                voiceState={voiceState}
-                isListening={voiceState === 'listening'}
-                activeDocumentId={selectedDocumentId || null}
-                onSelectStudyMaterial={(id) => {
-                  setSelectedDocumentId(id);
-                  setChatMode('rag');
-                }}
+              <ErrorBoundary fallbackTitle="Student Home encountered an issue">
+                <StudentHome
+                  onTriggerCamera={handleTriggerCamera}
+                  onTriggerVoice={handleTriggerVoice}
+                  voiceState={voiceState}
+                  isListening={voiceState === 'listening'}
+                  activeDocumentId={selectedDocumentId || null}
+                  onSelectStudyMaterial={(id) => {
+                    setSelectedDocumentId(id);
+                    setChatMode('rag');
+                  }}
                 onClearDocumentFilter={() => {
                   setSelectedDocumentId('');
                   setChatMode('general');
@@ -766,94 +910,61 @@ export function App() {
                 messages={messages}
                 onNewConversation={handleNewConversation}
                 customDocuments={customDocuments}
-                onAskQuestionText={(prompt) => {
-                  setQuestion(prompt);
-                  const inputArea = document.querySelector('textarea');
-                  if (inputArea) {
-                    inputArea.focus();
-                    inputArea.scrollIntoView({ behavior: 'smooth' });
-                  }
-                }}
+                onAskQuestionText={(prompt) => setQuestion(prompt)}
               />
+            </ErrorBoundary>
             )}
 
-            {/* Active Image Preview Card (When user took a photo or uploaded image) */}
-            {optimizedImageResult && (
-              <section className="card active-image-card">
-                <div className="active-image-header">
-                  <div className="image-title-wrap">
-                    <span className="image-badge-icon">📷</span>
-                    <div>
-                      <h3 className="active-image-title">Captured Study Material</h3>
-                      <p className="active-image-sub">{optimizedImageResult.file.name}</p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="image-dismiss-btn"
-                    onClick={handleRemoveActiveImage}
-                    title="Remove image"
-                    aria-label="Remove image"
-                  >
-                    ✕ Remove
-                  </button>
-                </div>
-
-                <div className="active-image-preview-box">
+            {/* Active Image Attachment Card */}
+            {activeImageFile && (
+              <div className="active-image-attachment-card">
+                <div className="attachment-preview-box">
                   <img
-                    src={optimizedImageResult.previewUrl}
-                    alt="Study material"
-                    className="active-image-element"
+                    src={URL.createObjectURL(activeImageFile)}
+                    alt="Question thumbnail preview"
+                    className="attachment-thumb"
                   />
+                  <div className="attachment-info">
+                    <span className="attachment-badge">📷 Attached Image</span>
+                    <span className="attachment-filename">{activeImageFile.name}</span>
+                    {optimizedImageResult && (
+                      <span className="attachment-opt-tag">✓ Optimized for Fast Vision</span>
+                    )}
+                  </div>
                 </div>
-
-                <div className="active-image-actions-bar">
-                  <button
-                    type="button"
-                    className="retake-photo-btn"
-                    onClick={handleTriggerCamera}
-                  >
-                    🔄 Replace Photo
-                  </button>
-                  <span className="image-ready-pill">✓ Ready to ask</span>
-                </div>
-              </section>
+                <button
+                  type="button"
+                  className="remove-attachment-btn"
+                  onClick={handleRemoveActiveImage}
+                  title="Remove image"
+                  aria-label="Remove image"
+                >
+                  ✕ Remove
+                </button>
+              </div>
             )}
 
-            {/* In-Conversation Navigation & Quick Pills (when messages exist) */}
-            {messages.length > 0 && (
-              <div className="conversation-top-controls">
-                <div className="active-grounding-chip-row">
-                  {selectedDocumentId ? (
-                    <span className="grounding-status-pill grounded">
-                      📄 Grounded in: <strong>{selectedDocumentId}</strong>
-                      <button
-                        type="button"
-                        className="pill-clear-btn"
-                        onClick={() => setSelectedDocumentId('')}
-                        title="Clear document grounding"
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ) : (
-                    <span className="grounding-status-pill general">
-                      🌐 General CS Mentor
-                    </span>
-                  )}
+            {/* Selected Document Filter Pill (above chat) */}
+            {selectedDocumentId && messages.length > 0 && (
+              <div className="chat-doc-context-pill">
+                <span className="context-pill-label">📄 Answering from:</span>
+                <strong className="context-pill-name">{selectedDocumentId}</strong>
+                <button
+                  type="button"
+                  className="context-pill-clear"
+                  onClick={() => setSelectedDocumentId('')}
+                  title="Search across all knowledge"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
-                  <button
-                    type="button"
-                    className="pill-action-upload"
-                    onClick={() => setShowUploadModal(true)}
-                  >
-                    + Notes
-                  </button>
-                </div>
-
-                {/* Quick Coach Follow-Up Actions */}
-                <div className="conversation-coach-bar">
-                  <span className="coach-bar-label">Coach:</span>
+            {/* In-chat Coach Quick Bar (shown after conversation has begun) */}
+            {messages.length > 0 && !activeImageFile && (
+              <div className="inchat-coach-bar">
+                <span className="coach-bar-label">Coach Actions:</span>
+                <div className="coach-mini-chips">
                   <button
                     type="button"
                     className="coach-mini-chip"
@@ -873,7 +984,7 @@ export function App() {
                     className="coach-mini-chip"
                     onClick={() => handleSelectCoachAction('Practice')}
                   >
-                    🛠️ Practice
+                    🎯 Practice
                   </button>
                   <button
                     type="button"
@@ -896,7 +1007,6 @@ export function App() {
                   errorMessage={errorMessage}
                   onNewConversation={handleNewConversation}
                   interactionId={interactionId}
-                  isDevMode={false}
                 />
               </section>
             )}
@@ -927,7 +1037,6 @@ export function App() {
                 onChange={setQuestion}
                 onSubmit={handleAskAI}
                 isLoading={isLoading}
-                isDevMode={false}
                 placeholder={
                   activeImageFile
                     ? 'Ask about this image... (or tap 🎤 Speak)'
@@ -944,216 +1053,15 @@ export function App() {
               />
             </section>
           </>
-        ) : (
-          /* ================================================================
-             DEVELOPER MODE VIEW (Full Engineering Diagnostics & Inspection)
-             ================================================================ */
-          <>
-            {/* Developer Mode Tabs */}
-            <section className="chat-mode-selector-card dev-mode-card">
-              <div className="dev-badge-banner">
-                🛠️ <strong>Developer Mode Active:</strong> Inspecting raw chunks, 768-D vectors, cosine similarity, agent intent & timing.
-              </div>
-              <div className="chat-mode-tabs" role="tablist" aria-label="Developer Endpoint Diagnostics">
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'general' ? 'active' : ''}`}
-                  onClick={() => setChatMode('general')}
-                  role="tab"
-                  aria-selected={chatMode === 'general'}
-                  title="General Chat Endpoint (/api/ask)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">🤖</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">General</span>
-                    <span className="mode-tab-endpoint">/api/ask</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'rag' ? 'active' : ''}`}
-                  onClick={() => setChatMode('rag')}
-                  role="tab"
-                  aria-selected={chatMode === 'rag'}
-                  title="RAG Pipeline Endpoint (/api/rag/ask)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">📄</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">RAG Pipeline</span>
-                    <span className="mode-tab-endpoint">/api/rag/ask</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'image' ? 'active' : ''}`}
-                  onClick={() => setChatMode('image')}
-                  role="tab"
-                  aria-selected={chatMode === 'image'}
-                  title="Vision & Multimodal Endpoint (/api/image/ask)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">📷</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">Vision</span>
-                    <span className="mode-tab-endpoint">/api/image/ask</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'agent' ? 'active' : ''}`}
-                  onClick={() => setChatMode('agent')}
-                  role="tab"
-                  aria-selected={chatMode === 'agent'}
-                  title="Autonomous Learning Agent Endpoint (/api/agent/learn)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">🧠</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">Agent</span>
-                    <span className="mode-tab-endpoint">/api/agent/learn</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'classroom' ? 'active' : ''}`}
-                  onClick={() => setChatMode('classroom')}
-                  role="tab"
-                  aria-selected={chatMode === 'classroom'}
-                  title="Classroom Assistant Endpoint (/api/agent/classroom)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">🏫</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">Classroom</span>
-                    <span className="mode-tab-endpoint">/api/agent/classroom</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={`mode-tab-btn ${chatMode === 'local-ai' ? 'active' : ''}`}
-                  onClick={() => setChatMode('local-ai')}
-                  role="tab"
-                  aria-selected={chatMode === 'local-ai'}
-                  title="Local AI Lab Endpoint (/api/local-ai)"
-                >
-                  <span className="mode-tab-icon" aria-hidden="true">🧪</span>
-                  <div className="mode-tab-info">
-                    <span className="mode-tab-title">Local AI</span>
-                    <span className="mode-tab-endpoint">/api/local-ai</span>
-                  </div>
-                </button>
-              </div>
-            </section>
-
-            {/* Developer Mode Document Ingestion & Vector Inspection */}
-            {chatMode === 'rag' && (
-              <section className="card document-upload-card">
-                <DocumentUpload onAskWithDocument={handleAskWithDocument} isDevMode={true} />
-              </section>
-            )}
-
-            {/* Developer Mode Image Mentor & Optimization Inspection */}
-            {chatMode === 'image' && (
-              <section className="card image-mentor-card">
-                <ImageMentor
-                  onAskImage={handleAskImage}
-                  isLoading={isLoading}
-                  activeInteractionId={interactionId}
-                  isDevMode={true}
-                  activeImageFile={activeImageFile}
-                  onActiveImageChange={setActiveImageFile}
-                />
-              </section>
-            )}
-
-            {/* Developer Mode Learning Coach & Milestone Diagnostics */}
-            {chatMode === 'agent' && (
-              <section className="card agent-coach-section">
-                <LearningCoach
-                  onRunAgent={handleRunAgent}
-                  isLoading={isLoading}
-                  selectedDocumentId={selectedDocumentId}
-                  isDevMode={true}
-                  lastAgentResult={lastAgentResult}
-                />
-              </section>
-            )}
-
-            {/* Developer Mode Classroom Assistant & Diagnostics */}
-            {chatMode === 'classroom' && (
-              <ClassroomAssistant
-                availableDocuments={[...customDocuments, ...DEFAULT_STUDY_MATERIALS]}
-                activeDocumentId={selectedDocumentId || null}
-                onSelectDocument={(id) => setSelectedDocumentId(id)}
-                onOpenUploadModal={() => setShowUploadModal(true)}
-                isDevMode={true}
-              />
-            )}
-
-            {/* Developer Mode Local AI Feasibility Lab */}
-            {chatMode === 'local-ai' && (
-              <section className="card local-ai-card">
-                <LocalAiLabPanel />
-              </section>
-            )}
-
-            {/* Developer Mode Quick Chips */}
-            {chatMode !== 'image' && chatMode !== 'agent' && chatMode !== 'classroom' && chatMode !== 'local-ai' && (
-              <section className="chips-section">
-                <span className="chips-label">Developer Test Prompts:</span>
-                <div className="chips-container">
-                  {samplePrompts.map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      className="chip"
-                      onClick={() => setQuestion(prompt)}
-                      disabled={isLoading}
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Developer Mode Response Thread with full debug inspect */}
-            {chatMode !== 'classroom' && chatMode !== 'local-ai' && (
-              <section className="card response-card">
-                <ResponseDisplay
-                  messages={messages}
-                  isLoading={isLoading}
-                  loadingStatusText={loadingStatusText}
-                  errorMessage={errorMessage}
-                  onNewConversation={handleNewConversation}
-                  interactionId={interactionId}
-                  isDevMode={true}
-                />
-              </section>
-            )}
-
-            {/* Developer Mode Input */}
-            {chatMode !== 'image' && chatMode !== 'agent' && chatMode !== 'classroom' && chatMode !== 'local-ai' && (
-              <section className="card input-card">
-                <QuestionInput
-                  question={question}
-                  onChange={setQuestion}
-                  onSubmit={handleAskAI}
-                  isLoading={isLoading}
-                  isDevMode={true}
-                  onTriggerCamera={handleTriggerCamera}
-                  triggerVoiceStart={triggerVoiceStart}
-                  onVoiceStateChange={setVoiceState}
-                />
-              </section>
-            )}
-          </>
         )}
       </main>
 
       {/* Footer */}
       <footer className="app-footer">
         <p>
-          {isDevMode ? (
+          {role === 'teacher' ? (
             <>
-              🧠 <strong>AI Provider:</strong> Ollama • <strong>Model:</strong> qwen3:4b • <strong>Vision:</strong> qwen3-vl:4b • <strong>Embeddings:</strong> qwen3-embedding:0.6b
+              👨‍🏫 <strong>ByteMind Teacher Hub:</strong> Create & Distribute Learning • Teacher Console
             </>
           ) : (
             <>

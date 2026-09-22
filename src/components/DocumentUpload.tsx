@@ -14,12 +14,19 @@ import React, { useState, useRef } from 'react';
 import { uploadPdfDocument, generateEmbeddings, searchDocumentChunks } from '../services/documentService';
 import { DocumentUploadResult, EmbeddingResult, SearchResponse } from '../types';
 
-interface DocumentUploadProps {
+export interface DocumentUploadProps {
   onAskWithDocument?: (documentId: string) => void;
+  onSelectForTeacher?: (documentId: string) => void;
+  isTeacherMode?: boolean;
   isDevMode?: boolean;
 }
 
-export function DocumentUpload({ onAskWithDocument, isDevMode = false }: DocumentUploadProps = {}) {
+export function DocumentUpload({
+  onAskWithDocument,
+  onSelectForTeacher,
+  isTeacherMode = false,
+  isDevMode = false,
+}: DocumentUploadProps = {}) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [result, setResult] = useState<DocumentUploadResult | null>(null);
@@ -308,8 +315,22 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
         <div className="doc-error-alert" role="alert">
           <span className="error-icon">⚠️</span>
           <div className="error-body">
-            <strong>{isDevMode ? 'Extraction Error:' : 'Notice:'}</strong>
+            <strong>Could not process this PDF.</strong>
             <p>{errorMessage}</p>
+            <button
+              type="button"
+              className="btn btn-secondary doc-retry-btn"
+              onClick={handleChoosePdfClick}
+              style={{
+                marginTop: '8px',
+                padding: '6px 14px',
+                fontSize: '0.85rem',
+                borderRadius: '8px',
+                cursor: 'pointer',
+              }}
+            >
+              🔄 Try Again / Choose Another PDF
+            </button>
           </div>
           <button
             type="button"
@@ -322,8 +343,55 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
         </div>
       )}
 
-      {/* Student Mode Document Ready Card (Requirement 10) */}
-      {!isDevMode && result && (
+      {/* Teacher Mode Document Ready Card */}
+      {isTeacherMode && result && (
+        <div className="student-doc-card teacher-doc-card">
+          <div className="student-doc-header">
+            <div className="student-doc-icon-wrap">
+              <span className="student-doc-icon">📘</span>
+            </div>
+            <div className="student-doc-details">
+              <h3 className="student-doc-filename" title={result.filename}>
+                {result.filename}
+              </h3>
+              <p className="student-doc-status">
+                <span className="ready-check">✓</span> Study material uploaded & indexed ({result.pages} {result.pages === 1 ? 'page' : 'pages'} • {result.totalChunks} chunks)
+              </p>
+            </div>
+          </div>
+
+          <div className="student-doc-actions">
+            {onSelectForTeacher ? (
+              <button
+                type="button"
+                className="btn-student-ask"
+                onClick={() => onSelectForTeacher(result.filename)}
+              >
+                ✓ Link to Learning Material
+              </button>
+            ) : onAskWithDocument ? (
+              <button
+                type="button"
+                className="btn-student-ask"
+                onClick={() => onAskWithDocument(result.filename)}
+              >
+                ✓ Link to Learning Material
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="btn-student-reset"
+              onClick={handleReset}
+              title="Upload another PDF"
+            >
+              Upload another PDF
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Student Mode Document Ready Card */}
+      {!isTeacherMode && !isDevMode && result && (
         <div className="student-doc-card">
           <div className="student-doc-header">
             <div className="student-doc-icon-wrap">
@@ -334,7 +402,7 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
                 {result.filename}
               </h3>
               <p className="student-doc-status">
-                <span className="ready-check">✓</span> Study material ready
+                <span className="ready-check">✓</span> Study material ready ({result.pages} {result.pages === 1 ? 'page' : 'pages'})
               </p>
             </div>
           </div>
@@ -361,12 +429,9 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
         </div>
       )}
 
-      {/* Developer Mode Extraction Results & Diagnostics Display (Requirement 5) */}
+      {/* Developer Mode Document Extraction Results Display */}
       {isDevMode && result && (
         <div className="doc-result-panel">
-          <div className="dev-panel-banner">
-            🛠️ Developer Mode Active: Inspecting Raw Extraction, Chunks, 768-D Embeddings & Semantic Search
-          </div>
           <div className="result-header">
             <div className="result-badge">
               <span className="check-icon">✓</span> Extracted on Server
@@ -482,20 +547,28 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
                     <span className="embedding-status-badge doc-ready-badge">
                       ✓ Document ready ({embeddingResult.storageMode === 'pgvector' ? 'PostgreSQL' : 'RAM cache'})
                     </span>
-                    <span className="model-tag">gemini-embedding-2 • 768-D</span>
+                    <span className="model-tag">
+                      {embeddingResult.storageMode === 'lexical'
+                        ? 'Lexical BM25'
+                        : `${embeddingResult.embeddingDimensions || 768}-D Vectors`}
+                    </span>
                     {embeddingResult.storageMode && (
                       <span className={`storage-pill ${embeddingResult.storageMode}`}>
-                        {embeddingResult.storageMode === 'pgvector' ? '🐘 Persistent DB' : '🧠 RAM Store'}
+                        {embeddingResult.storageMode === 'pgvector'
+                          ? '🐘 Persistent DB'
+                          : embeddingResult.storageMode === 'lexical'
+                          ? '⚡ Lexical Index'
+                          : '🧠 RAM Store'}
                       </span>
                     )}
                   </div>
 
                   <div className="embedding-stats-row">
                     <span className="embed-stat">
-                      <strong>Chunks Embedded:</strong> {embeddingResult.chunksProcessed}
+                      <strong>Chunks Processed:</strong> {embeddingResult.chunksProcessed}
                     </span>
                     <span className="embed-stat">
-                      <strong>Vector Dimensions:</strong> {embeddingResult.embeddingDimensions}
+                      <strong>Dimensions:</strong> {embeddingResult.embeddingDimensions || 0}
                     </span>
                     {onAskWithDocument && (
                       <button
@@ -508,16 +581,18 @@ export function DocumentUpload({ onAskWithDocument, isDevMode = false }: Documen
                     )}
                   </div>
 
-                  <div className="embedding-sample-box">
-                    <div className="sample-header">
-                      <span>Vector Sample ({embeddingResult.sample.chunkId}):</span>
+                  {embeddingResult.sample && (
+                    <div className="embedding-sample-box">
+                      <div className="sample-header">
+                        <span>Sample Chunk ({embeddingResult.sample.chunkId || 'chunk_0'}):</span>
+                      </div>
+                      <code className="sample-vector">
+                        {embeddingResult.sample.embeddingPreview && embeddingResult.sample.embeddingPreview.length > 0
+                          ? `[${embeddingResult.sample.embeddingPreview.map((v) => v.toFixed(5)).join(', ')}, ...]`
+                          : `[Lexical retrieval: ${embeddingResult.sample.textPreview || 'indexed'}]`}
+                      </code>
                     </div>
-                    <code className="sample-vector">
-                      [
-                      {embeddingResult.sample.embeddingPreview.map((v) => v.toFixed(5)).join(', ')}
-                      , ... 763 more dimensions]
-                    </code>
-                  </div>
+                  )}
 
                   {/* Step 5.4: Test Semantic Search Section */}
                   <div className="semantic-search-section">

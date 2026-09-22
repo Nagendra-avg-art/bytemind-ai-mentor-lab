@@ -20,9 +20,38 @@ import {
   ClassroomIntent,
 } from '../types';
 import { getApiUrl, handleApiFetchError } from './apiConfig';
+import { isAssessmentActiveClient, getClientAssessmentSession } from './teacherService';
 
 interface ApiErrorResponse {
   error?: string;
+  message?: string;
+}
+
+/**
+ * Guards against calling any AI service when Assessment Mode is active.
+ * Throws an immediate error without sending any network request.
+ */
+function assertAssessmentInactive(): void {
+  if (isAssessmentActiveClient()) {
+    const err = new Error('AI assistance is disabled during this assessment.');
+    (err as any).statusCode = 403;
+    (err as any).serverData = {
+      error: 'ASSESSMENT_MODE_ACTIVE',
+      message: 'AI assistance is disabled during this assessment.',
+    };
+    throw err;
+  }
+}
+
+/**
+ * Attaches client assessment tracking headers to outbound AI requests.
+ */
+function getAssessmentHeaders(): Record<string, string> {
+  const active = isAssessmentActiveClient();
+  return {
+    'X-Assessment-Active': active ? 'true' : 'false',
+    'X-Assessment-Session': getClientAssessmentSession(),
+  };
 }
 
 /**
@@ -37,6 +66,7 @@ export async function sendPromptToAI(
   interactionId?: string,
   externalSignal?: AbortSignal
 ): Promise<AskAIResponse> {
+  assertAssessmentInactive();
   const trimmedPrompt = prompt.trim();
   if (!trimmedPrompt) {
     throw new Error('Please enter a question before asking AI.');
@@ -71,6 +101,7 @@ export async function sendPromptToAI(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...getAssessmentHeaders(),
       },
       body: JSON.stringify(requestBody),
       signal: timeoutController.signal,
@@ -125,6 +156,7 @@ export async function sendRAGPromptToAI(
     topK?: number;
   }
 ): Promise<RAGAskResponse> {
+  assertAssessmentInactive();
   const trimmedPrompt = prompt.trim();
   if (!trimmedPrompt) {
     throw new Error('Please enter a question before asking AI.');
@@ -162,6 +194,7 @@ export async function sendRAGPromptToAI(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...getAssessmentHeaders(),
       },
       body: JSON.stringify(requestBody),
       signal: timeoutController.signal,
@@ -219,6 +252,7 @@ export async function sendImagePromptToAI(
   prompt: string,
   interactionId?: string
 ): Promise<ImageAskResponse> {
+  assertAssessmentInactive();
   const trimmedPrompt = prompt.trim();
   if (!trimmedPrompt) {
     throw new Error('Please enter a question about the image.');
@@ -239,6 +273,9 @@ export async function sendImagePromptToAI(
 
     const response = await fetch(getApiUrl('/api/image/ask'), {
       method: 'POST',
+      headers: {
+        ...getAssessmentHeaders(),
+      },
       body: formData,
     });
 
@@ -283,6 +320,7 @@ export async function sendAgentGoal(
     interactionId?: string;
   }
 ): Promise<AgentResponse> {
+  assertAssessmentInactive();
   const trimmedGoal = goal.trim();
   if (!trimmedGoal) {
     throw new Error('Please enter a learning goal before asking the Learning Coach.');
@@ -314,6 +352,7 @@ export async function sendAgentGoal(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...getAssessmentHeaders(),
       },
       body: JSON.stringify(requestBody),
       signal: timeoutController.signal,
@@ -355,6 +394,7 @@ export async function sendClassroomAction(
   action: ClassroomIntent | string,
   interactionId?: string
 ): Promise<ClassroomActionResponse> {
+  assertAssessmentInactive();
   const trimmedDoc = documentId.trim();
   if (!trimmedDoc) {
     throw new Error('Please select or upload a lecture PDF document first.');
@@ -385,6 +425,7 @@ export async function sendClassroomAction(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...getAssessmentHeaders(),
       },
       body: JSON.stringify(requestBody),
       signal: controller.signal,

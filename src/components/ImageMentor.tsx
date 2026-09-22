@@ -420,9 +420,8 @@ export const ImageMentor: React.FC<ImageMentorProps> = ({
           onChange={setQuestion}
           onSubmit={handleSubmit}
           isLoading={isLoading || status === 'optimizing'}
-          isDevMode={isDevMode}
           inputId="image-question-input"
-          label={isDevMode ? 'Ask about this image (/api/image/ask):' : 'Ask about this image:'}
+          label="Ask about this image:"
           accessibleVoiceLabel="Ask about this image by voice or type below"
           placeholder={
             optimizedResult

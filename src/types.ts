@@ -103,10 +103,11 @@ export interface EmbeddingSample {
 export interface EmbeddingResult {
   success: boolean;
   documentId: string;
-  storageMode?: 'pgvector' | 'memory';
+  storageMode?: 'pgvector' | 'memory' | 'lexical';
   chunksProcessed: number;
   embeddingDimensions: number;
-  sample: EmbeddingSample;
+  retrievalStrategy?: string;
+  sample?: EmbeddingSample;
 }
 
 /**

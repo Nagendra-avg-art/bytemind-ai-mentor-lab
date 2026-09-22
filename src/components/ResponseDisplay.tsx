@@ -21,7 +21,6 @@ interface ResponseDisplayProps {
   errorMessage: string | null;
   onNewConversation: () => void;
   interactionId: string | null;
-  isDevMode?: boolean;
 }
 
 export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
@@ -31,7 +30,6 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
   errorMessage,
   onNewConversation,
   interactionId,
-  isDevMode = false,
 }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
@@ -160,7 +158,7 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
                   <div className="message-workflow-strip">
                     <div className="workflow-strip-header">
                       <span className="workflow-strip-label">
-                        {isDevMode && msg.intent ? `🎯 Workflow (${msg.intent}):` : '🎯 Learning Steps:'}
+                        🎯 Learning Steps:
                       </span>
                       {msg.relevantDocument && (
                         <span className="workflow-doc-tag" title={msg.relevantDocument}>
@@ -178,41 +176,7 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
                   </div>
                 )}
 
-                {/* Developer Mode Agent Debug Info */}
-                {isDevMode && msg.isAgent && (
-                  <div className="agent-msg-debug">
-                    <span className="dev-tag">⚙️ AGENT</span>
-                    <span>Intent: <strong>{msg.intent || 'N/A'}</strong></span>
-                    {msg.selectedTool && (
-                      <span>Tool: <strong>{msg.selectedTool}</strong></span>
-                    )}
-                    <span>Doc: <strong>{msg.documentUsed || msg.relevantDocument || 'None (General)'}</strong></span>
-                    {msg.ragRequired !== undefined && (
-                      <span>RAG: <strong>{msg.ragRequired ? `Active (${msg.retrievedChunks || msg.sources?.length || 0} chunks)` : 'Inactive'}</strong></span>
-                    )}
-                    {msg.similarityResult && (
-                      <span>Sim: <strong>{msg.similarityResult}</strong></span>
-                    )}
-                    {msg.executionMs !== undefined && (
-                      <span>Time: <strong>{msg.executionMs}ms</strong></span>
-                    )}
-                  </div>
-                )}
 
-                {/* Developer Mode Provider & Local AI Telemetry */}
-                {isDevMode && !msg.isAgent && (msg.provider || msg.model || msg.isLocalAI) && (
-                  <div className="agent-msg-debug">
-                    <span className="dev-tag">⚡ {msg.isLocalAI || msg.provider === 'ollama' ? 'LOCAL AI' : msg.provider === 'groq' ? 'GROQ CLOUD' : 'GEMINI CLOUD'}</span>
-                    {msg.provider && (
-                      <span>
-                        Provider: <strong>{msg.provider === 'ollama' ? 'Ollama' : msg.provider === 'groq' ? 'Groq' : 'Gemini'}</strong>
-                      </span>
-                    )}
-                    {msg.model && <span>Model: <strong>{msg.model}</strong></span>}
-                    {msg.executionMs !== undefined && <span>Response time: <strong>{msg.executionMs}ms</strong></span>}
-                    {(msg.isLocalAI || msg.provider === 'ollama') && <span>Local AI: <strong>Active</strong></span>}
-                  </div>
-                )}
 
                 <div className="message-content">
                   <pre className="message-text">{msg.text}</pre>
@@ -236,19 +200,9 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
                         <li key={`${src.chunkId || sIdx}-${sIdx}`} className="rag-source-item">
                           <span className="rag-source-bullet">•</span>
                           <span className="rag-source-text">
-                            <strong>{src.filename || src.documentId}</strong> — {isDevMode ? `Chunk ${src.chunkIndex}` : `Section ${src.chunkIndex}`}
+                            <strong>{src.filename || src.documentId}</strong> — Section {src.chunkIndex}
                             {src.page != null ? ` (Page ${src.page})` : ''}
-                            {isDevMode && src.chunkId && (
-                              <code className="dev-chunk-code" style={{ marginLeft: '0.4rem', fontSize: '0.72rem', opacity: 0.8 }}>
-                                {src.chunkId}
-                              </code>
-                            )}
                           </span>
-                          {isDevMode && (
-                            <span className="rag-source-score" title="Cosine Similarity Score">
-                              ({(src.similarity * 100).toFixed(1)}% match)
-                            </span>
-                          )}
                           {expandedSources.has(msg.id) && src.textPreview && (
                             <div className="rag-source-preview-box">
                               <p className="rag-source-preview-text">"{src.textPreview}"</p>
@@ -297,7 +251,7 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
             .trim();
 
           const displayTitle = isNetwork ? 'Connection Notice' : 'Notice';
-          const displayBody = isDevMode ? errorMessage : (studentCleanMessage || errorMessage);
+          const displayBody = studentCleanMessage || errorMessage;
 
           return (
             <div className="error-state" role="alert">
@@ -305,11 +259,6 @@ export const ResponseDisplay: React.FC<ResponseDisplayProps> = ({
               <div className="error-body">
                 <p className="error-title">{displayTitle}</p>
                 <p className="error-message">{displayBody}</p>
-                {isDevMode && (
-                  <div className="error-dev-info" style={{ marginTop: '0.4rem', fontSize: '0.75rem', opacity: 0.85 }}>
-                    <code>Origin: {window.location.origin} • Browser Online: {navigator.onLine ? 'Yes' : 'No'}</code>
-                  </div>
-                )}
               </div>
               <button
                 type="button"

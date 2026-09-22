@@ -121,9 +121,8 @@ export const LearningCoach: React.FC<LearningCoachProps> = ({
           onChange={setGoal}
           onSubmit={handleSubmit}
           isLoading={isLoading}
-          isDevMode={isDevMode}
           inputId="coach-goal-input"
-          label={isDevMode ? 'What do you want to learn? (/api/agent/learn):' : 'What do you want to learn?'}
+          label="What do you want to learn?"
           accessibleVoiceLabel="Speak your learning goal or type below"
           placeholder="e.g. 'Help me prepare for my DBMS exam', 'Create a revision plan for Module 1', 'Summarize this chapter', or 'Quiz me on binary search'..."
           submitButtonText="Ask Learning Coach"
@@ -162,62 +161,6 @@ export const LearningCoach: React.FC<LearningCoachProps> = ({
                 </span>
               )}
             </div>
-
-            {/* Developer Mode Debug Stats (Hidden in Student Mode - Requirement 14) */}
-            {isDevMode && (
-              <div className="agent-dev-debug-panel">
-                <span className="dev-tag">⚙️ AGENT DEBUG</span>
-                <span className="dev-stat">
-                  <strong>Intent:</strong> {lastAgentResult.intent}
-                </span>
-                {lastAgentResult.selectedTool && (
-                  <>
-                    <span className="dev-divider">•</span>
-                    <span className="dev-stat">
-                      <strong>Tool:</strong> {lastAgentResult.selectedTool}
-                    </span>
-                  </>
-                )}
-                <span className="dev-divider">•</span>
-                <span className="dev-stat">
-                  <strong>Document:</strong> {lastAgentResult.documentUsed || lastAgentResult.relevantDocument || 'None (General CS)'}
-                </span>
-                <span className="dev-divider">•</span>
-                <span className="dev-stat">
-                  <strong>Retrieved Chunks:</strong> {lastAgentResult.retrievedChunks !== undefined ? lastAgentResult.retrievedChunks : (lastAgentResult.sources?.length || 0)}
-                </span>
-                {lastAgentResult.similarityResult && (
-                  <>
-                    <span className="dev-divider">•</span>
-                    <span className="dev-stat">
-                      <strong>Similarity:</strong> {lastAgentResult.similarityResult}
-                    </span>
-                  </>
-                )}
-                <span className="dev-divider">•</span>
-                {lastAgentResult.executionMs !== undefined && (
-                  <span className="dev-stat">
-                    <strong>Timing:</strong> {lastAgentResult.executionMs}ms
-                  </span>
-                )}
-                {lastAgentResult.localAI && (
-                  <div className="agent-local-ai-summary-row">
-                    <span className="local-ai-pill">🧪 LOCAL AI EXPERIMENT</span>
-                    <span className="dev-stat">
-                      <strong>Model:</strong> {lastAgentResult.localAI.model}
-                    </span>
-                    <span className="dev-divider">•</span>
-                    <span className="dev-stat">
-                      <strong>Intent:</strong> {lastAgentResult.localAI.predictedIntent} ({Math.round(lastAgentResult.localAI.confidence * 100)}%)
-                    </span>
-                    <span className="dev-divider">•</span>
-                    <span className="dev-stat">
-                      <strong>Runtime:</strong> {lastAgentResult.localAI.runtime}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Goal Echo */}

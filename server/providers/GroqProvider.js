@@ -6,8 +6,8 @@
  * 
  * OpenAI-compatible HTTP REST API:
  * Endpoint: https://api.groq.com/openai/v1
- * Default Chat Model: llama-3.3-70b-versatile (or configured via GROQ_CHAT_MODEL)
- * Default Vision Model: llama-3.2-11b-vision-preview (or configured via GROQ_VISION_MODEL)
+ * Default Chat Model: openai/gpt-oss-20b (or configured via GROQ_CHAT_MODEL)
+ * Default Vision Model: qwen/qwen3.8-27b (or configured via GROQ_VISION_MODEL)
  */
 
 import { AIProvider } from './AIProvider.js';
@@ -39,8 +39,8 @@ export class GroqProvider extends AIProvider {
     super('groq');
     this.apiKey = options.apiKey || process.env.GROQ_API_KEY || '';
     this.baseUrl = options.baseUrl || process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
-    this.model = options.model || process.env.GROQ_CHAT_MODEL || 'llama-3.3-70b-versatile';
-    this.visionModel = options.visionModel || process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
+    this.model = options.model || process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-20b';
+    this.visionModel = options.visionModel || process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b';
   }
 
   /**
@@ -93,30 +93,47 @@ export class GroqProvider extends AIProvider {
     const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const startTime = Date.now();
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        messages,
-        temperature: options.temperature ?? 0.6,
-        max_tokens: options.max_tokens ?? 2048,
-      }),
-    });
+    let response;
+    let sanitized = '';
 
-    if (!response.ok) {
+    // Up to 2 attempts to gracefully smooth transient TPM spikes
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages,
+          temperature: options.temperature ?? 0.6,
+          max_tokens: options.max_tokens ?? 2048,
+        }),
+      });
+
+      if (response.ok) break;
+
       const rawError = await response.text().catch(() => '');
-      const sanitized = sanitizeErrorMessage(rawError);
+      sanitized = sanitizeErrorMessage(rawError);
 
-      if (
+      const isRateLimit =
         response.status === 429 ||
         sanitized.toLowerCase().includes('rate limit') ||
         sanitized.toLowerCase().includes('rate_limit') ||
-        sanitized.toLowerCase().includes('quota')
-      ) {
+        sanitized.toLowerCase().includes('quota');
+
+      if (isRateLimit && attempt < 2) {
+        // Extract wait time from Groq error message if present (e.g. "try again in 11.6s")
+        const match = sanitized.match(/try again in ([0-9.]+)s/i);
+        const waitSec = match ? parseFloat(match[1]) : 3;
+        const waitMs = Math.min(15000, Math.ceil(waitSec * 1000) + 500);
+        console.warn(`[GroqProvider] Rate limit hit (attempt ${attempt + 1}). Smoothing TPM: waiting ${waitMs}ms before retry...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+
+      if (isRateLimit) {
         throw new GroqRateLimitError('AI is temporarily busy. Please try again shortly.', {
           status: response.status,
           model: targetModel,
@@ -206,30 +223,44 @@ export class GroqProvider extends AIProvider {
 
     const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const startTime = Date.now();
+    let response;
+    let sanitized = '';
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        messages,
-        max_tokens: 2048,
-      }),
-    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages,
+          max_tokens: 2048,
+        }),
+      });
 
-    if (!response.ok) {
+      if (response.ok) break;
+
       const rawError = await response.text().catch(() => '');
-      const sanitized = sanitizeErrorMessage(rawError);
+      sanitized = sanitizeErrorMessage(rawError);
 
-      if (
+      const isRateLimit =
         response.status === 429 ||
         sanitized.toLowerCase().includes('rate limit') ||
         sanitized.toLowerCase().includes('rate_limit') ||
-        sanitized.toLowerCase().includes('quota')
-      ) {
+        sanitized.toLowerCase().includes('quota');
+
+      if (isRateLimit && attempt < 2) {
+        const match = sanitized.match(/try again in ([0-9.]+)s/i);
+        const waitSec = match ? parseFloat(match[1]) : 3;
+        const waitMs = Math.min(15000, Math.ceil(waitSec * 1000) + 500);
+        console.warn(`[GroqProvider] Vision rate limit hit (attempt ${attempt + 1}). Smoothing TPM: waiting ${waitMs}ms before retry...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+
+      if (isRateLimit) {
         throw new GroqRateLimitError('AI is temporarily busy. Please try again shortly.', {
           status: response.status,
           model: targetModel,

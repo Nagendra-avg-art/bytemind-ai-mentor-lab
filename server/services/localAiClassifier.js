@@ -285,6 +285,15 @@ export async function classifyLearningIntent(text) {
       }
     });
 
+    // If explicit deterministic keyword rule matched a non-default intent, respect rule priority
+    const ruleIntent = detectIntent(rawInput);
+    if (ruleIntent !== 'EXPLAIN') {
+      bestIntent = ruleIntent;
+      if (intentProbabilities[ruleIntent]) {
+        bestScore = Math.max(bestScore, intentProbabilities[ruleIntent]);
+      }
+    }
+
     const duration = Math.round((performance.now() - startTime) * 100) / 100;
 
     return {

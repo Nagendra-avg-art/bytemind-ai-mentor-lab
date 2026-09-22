@@ -65,6 +65,25 @@ import {
 } from './db/vectorStore.js';
 import { getActiveProvider, getActiveProviderName, LocalAiUnavailableError, LocalAiTimeoutError, GroqRateLimitError } from './providers/index.js';
 import { getOrCreateSession, getSessionHistory, recordTurn } from './services/sessionService.js';
+import {
+  createArtifact,
+  getAllArtifacts,
+  getArtifactByShareId,
+  submitAnswers,
+  getSubmissions,
+  askQuestionAboutArtifact,
+} from './services/teacherHubService.js';
+import {
+  saveUploadedDocument,
+  getDocumentContent,
+  getDocumentFile,
+} from './services/documentStore.js';
+import {
+  startAssessmentSession,
+  endAssessmentSession,
+  isAssessmentActive,
+  isAssessmentType,
+} from './services/assessmentService.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -246,6 +265,16 @@ app.post('/api/documents', (req, res) => {
       storeDocumentChunks(uploadedFile.originalname, chunks);
       storeDocumentChunks(cleanDocId, chunks);
 
+      // Store in document registry for safe student viewing and downloading
+      saveUploadedDocument({
+        filename: uploadedFile.originalname,
+        buffer: buffer,
+        mimetype: uploadedFile.mimetype || 'application/pdf',
+        text: rawText,
+        pages: totalPages,
+        textLength: textLength,
+      });
+
       // Extract a clean, readable text preview of the entire document (first 300 characters)
       const cleanedText = rawText.replace(/\s+/g, ' ').trim();
       const textPreview = cleanedText.length > 300
@@ -352,13 +381,23 @@ app.post('/api/documents/embed', async (req, res) => {
       storeDocumentChunks(cleanDocId, chunksToEmbed);
       storeDocumentChunks(sanitizedDocId, chunksToEmbed);
       console.log(`[RAG] Indexed ${chunksToEmbed.length} chunks for lexical retrieval ("${cleanDocId}")`);
+      const firstChunk = chunksToEmbed[0] || {};
+      const firstChunkText = firstChunk.text ?? firstChunk.content ?? firstChunk.preview ?? '';
+      const textPreview = firstChunkText.length > 150 ? firstChunkText.slice(0, 150) + '...' : firstChunkText;
+
       return res.json({
         success: true,
         documentId: cleanDocId,
         filename: cleanDocId,
         storageMode: 'lexical',
         chunksProcessed: chunksToEmbed.length,
+        embeddingDimensions: 0,
         retrievalStrategy: 'lexical-bm25',
+        sample: {
+          chunkId: firstChunk.chunkId || `${cleanDocId}_chunk_0`,
+          textPreview: textPreview.replace(/\s+/g, ' ').trim(),
+          embeddingPreview: [],
+        },
       });
     }
 
@@ -470,6 +509,14 @@ app.get('/api/documents', (req, res) => {
  */
 app.post('/api/search', async (req, res) => {
   try {
+    // Assessment Mode Protection: AI search is blocked during active assessments
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { query, topK, documentId } = req.body;
 
     // 1. Validate query string
@@ -548,6 +595,65 @@ app.post('/api/search', async (req, res) => {
 });
 
 /**
+ * GET /api/documents/:documentId/file
+ * Safe document serving: Serves the uploaded or starter study material as a file (PDF or text)
+ * for in-browser inspection or download.
+ */
+app.get('/api/documents/:documentId/file', (req, res) => {
+  try {
+    const { documentId } = req.params;
+    if (!documentId || !/^[\w.\- ]+$/i.test(documentId)) {
+      return res.status(400).json({ error: 'Invalid document identifier.' });
+    }
+    const fileData = getDocumentFile(documentId);
+    if (!fileData || !fileData.buffer) {
+      return res.status(404).json({ error: `Document file "${documentId}" not found.` });
+    }
+    res.setHeader('Content-Type', fileData.mimetype || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileData.filename)}"`);
+    return res.send(fileData.buffer);
+  } catch (err) {
+    console.error('Error in GET /api/documents/:documentId/file:', err);
+    return res.status(500).json({ error: err.message || 'Failed to serve document file.' });
+  }
+});
+
+/**
+ * GET /api/documents/:documentId/content
+ * Returns document text and metadata for the lightweight mobile-friendly in-app reader modal.
+ */
+app.get('/api/documents/:documentId/content', (req, res) => {
+  try {
+    const { documentId } = req.params;
+    if (!documentId || !/^[\w.\- ]+$/i.test(documentId)) {
+      return res.status(400).json({ error: 'Invalid document identifier.' });
+    }
+    const content = getDocumentContent(documentId);
+    if (!content) {
+      // Fallback: check if raw chunks are stored and reconstruct
+      const chunks = getDocumentChunks(documentId);
+      if (chunks && chunks.length > 0) {
+        const fullText = chunks.map(c => c.text || '').join('\n\n');
+        return res.json({
+          success: true,
+          documentId,
+          filename: chunks[0].filename || documentId,
+          pages: chunks[chunks.length - 1].pageNumber || 1,
+          textLength: fullText.length,
+          text: fullText,
+          hasFile: false,
+        });
+      }
+      return res.status(404).json({ error: `Document content for "${documentId}" not found.` });
+    }
+    return res.json({ success: true, ...content });
+  } catch (err) {
+    console.error('Error in GET /api/documents/:documentId/content:', err);
+    return res.status(500).json({ error: err.message || 'Failed to get document content.' });
+  }
+});
+
+/**
  * RAG AI Query endpoint (Step 5.5: Connect RAG Retrieval to Gemini Generation)
  * 
  * WHY THIS ENDPOINT IS NEEDED:
@@ -581,6 +687,14 @@ app.post('/api/search', async (req, res) => {
  */
 app.post('/api/rag/ask', async (req, res) => {
   try {
+    // Assessment Mode Protection: AI assistance is blocked during active assessments
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { question, documentId, interactionId, topK, threshold } = req.body;
 
     // 1. Validate question
@@ -602,8 +716,8 @@ app.post('/api/rag/ask', async (req, res) => {
       parsedTopK = num;
     }
 
-    // 3. Validate threshold parameter
-    let parsedThreshold = DEFAULT_SIMILARITY_THRESHOLD;
+    // 3. Validate threshold parameter (optional; defaults per active provider in ragService)
+    let parsedThreshold = undefined;
     if (threshold !== undefined) {
       const th = Number(threshold);
       if (isNaN(th) || th < 0 || th > 1) {
@@ -774,6 +888,14 @@ app.post('/api/rag/ask', async (req, res) => {
  * Returns: { success: true, answer: string, interactionId: string }
  */
 app.post('/api/image/ask', (req, res) => {
+  // Assessment Mode Protection: AI assistance is blocked during active assessments
+  if (isAssessmentActive(req)) {
+    return res.status(403).json({
+      error: 'ASSESSMENT_MODE_ACTIVE',
+      message: 'AI assistance is disabled during this assessment.',
+    });
+  }
+
   imageUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'file', maxCount: 1 }])(req, res, async (err) => {
     // 1. Handle multer errors (size limit, mime type rejection)
     if (err instanceof multer.MulterError) {
@@ -911,6 +1033,14 @@ app.post('/api/image/ask', (req, res) => {
  */
 app.post('/api/agent/learn', async (req, res) => {
   try {
+    // Assessment Mode Protection: AI assistance is blocked during active assessments
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { goal, documentId, interactionId } = req.body;
 
     // 1. Validate goal parameter
@@ -1092,6 +1222,13 @@ app.get('/api/local-ai/status', async (req, res) => {
 
 app.post('/api/local-ai/classify', async (req, res) => {
   try {
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { text } = req.body;
     if (!text || typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ error: 'Please provide text in the request body.' });
@@ -1134,6 +1271,14 @@ app.post('/api/local-ai/classify', async (req, res) => {
  */
 app.post('/api/agent/classroom', async (req, res) => {
   try {
+    // Assessment Mode Protection: AI assistance is blocked during active assessments
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { action, intent, documentId, interactionId } = req.body;
 
     const chosenAction = action || intent;
@@ -1295,6 +1440,7 @@ app.post('/api/agent/classroom', async (req, res) => {
   }
 });
 
+
 /**
  * Main AI Query endpoint.
  * Receives: { question: string, interactionId?: string }
@@ -1302,6 +1448,14 @@ app.post('/api/agent/classroom', async (req, res) => {
  */
 app.post('/api/ask', async (req, res) => {
   try {
+    // Assessment Mode Protection: AI assistance is blocked during active assessments
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
     const { question, interactionId } = req.body;
 
     // 1. Validate request body
@@ -1514,6 +1668,17 @@ async function seedStarterDocumentsIfEmpty() {
     }
 
     for (const doc of STARTER_DOCUMENTS) {
+      // Register into document registry for safe student viewing and downloading
+      saveUploadedDocument({
+        filename: doc.filename,
+        buffer: Buffer.from(doc.text, 'utf-8'),
+        mimetype: 'text/plain',
+        text: doc.text,
+        pages: doc.pageCount,
+        textLength: doc.text.length,
+        isStarter: true,
+      });
+
       if (activeProviderName === 'groq') {
         const existing = getDocumentChunks(doc.documentId) || getDocumentChunks(doc.filename);
         if (existing && existing.length > 0) {
@@ -1556,6 +1721,260 @@ async function seedStarterDocumentsIfEmpty() {
     console.warn('⚠️  Warning during starter document seeding:', err.message);
   }
 }
+
+// ============================================================================
+// Teacher Hub & Shared Artifact Endpoints
+// ============================================================================
+
+/**
+ * POST /api/teacher/artifacts
+ * Creates and publishes a new learning material artifact (NOTES, ASSIGNMENT, QUIZ).
+ * Generates unique shareId (e.g. BM-7K42P).
+ */
+app.post('/api/teacher/artifacts', (req, res) => {
+  try {
+    const {
+      teacherId,
+      type,
+      title,
+      description,
+      instructions,
+      content,
+      documentId,
+      questions,
+      allowAiAssistance,
+      customShareId,
+    } = req.body;
+
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'Title is required to publish learning material.' });
+    }
+
+    const cleanTeacherId = teacherId || req.headers['x-teacher-id'] || 'tch_default';
+
+    const artifact = createArtifact({
+      teacherId: cleanTeacherId,
+      type,
+      title,
+      description,
+      instructions,
+      content,
+      documentId,
+      questions,
+      allowAiAssistance,
+      customShareId,
+    });
+
+    return res.status(201).json({
+      success: true,
+      artifact,
+    });
+  } catch (err) {
+    console.error('Error in POST /api/teacher/artifacts:', err);
+    return res.status(500).json({ error: err.message || 'Failed to publish material' });
+  }
+});
+
+/**
+ * GET /api/teacher/artifacts
+ * Retrieves published artifacts for the Teacher Hub management view, isolated by teacherId.
+ */
+app.get('/api/teacher/artifacts', (req, res) => {
+  try {
+    const teacherId = req.query.teacherId || req.headers['x-teacher-id'] || null;
+    const artifacts = getAllArtifacts(teacherId, true);
+    return res.json({
+      success: true,
+      count: artifacts.length,
+      artifacts,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/teacher/artifacts:', err);
+    return res.status(500).json({ error: err.message || 'Failed to fetch published materials' });
+  }
+});
+
+/**
+ * GET /api/teacher/submissions
+ * Retrieves student submissions for the Teacher Hub, isolated by teacherId.
+ */
+app.get('/api/teacher/submissions', (req, res) => {
+  try {
+    const teacherId = req.query.teacherId || req.headers['x-teacher-id'] || null;
+    const { shareId } = req.query;
+    const subs = getSubmissions(teacherId, shareId);
+    return res.json({
+      success: true,
+      count: subs.length,
+      submissions: subs,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/teacher/submissions:', err);
+    return res.status(500).json({ error: err.message || 'Failed to fetch submissions' });
+  }
+});
+
+/**
+ * GET /api/share/:shareId
+ * Public endpoint: Loads published artifact for student viewer by shareId or short code.
+ */
+app.get('/api/share/:shareId', (req, res) => {
+  try {
+    const { shareId } = req.params;
+    const artifact = getArtifactByShareId(shareId, false);
+    if (!artifact) {
+      return res.status(404).json({
+        error: `No published material found for share code: "${shareId}"`,
+      });
+    }
+
+    // Enrich with document content if a document is attached
+    let enrichedArtifact = { ...artifact };
+    if (artifact.documentId) {
+      const docContent = getDocumentContent(artifact.documentId);
+      if (docContent) {
+        enrichedArtifact.documentFilename = docContent.filename;
+        enrichedArtifact.documentText = docContent.text;
+        enrichedArtifact.documentPages = docContent.pages;
+        enrichedArtifact.hasFile = docContent.hasFile;
+      }
+    }
+
+    return res.json({
+      success: true,
+      artifact: enrichedArtifact,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/share/:shareId:', err);
+    return res.status(500).json({ error: err.message || 'Failed to load shared material' });
+  }
+});
+
+/**
+ * POST /api/share/:shareId/submit
+ * Public endpoint: Records a student's submission for an assignment or quiz.
+ */
+app.post('/api/share/:shareId/submit', (req, res) => {
+  try {
+    const { shareId } = req.params;
+    const { studentName, studentId, studentIdentifier, answers, sessionId } = req.body || {};
+
+    const result = submitAnswers({
+      shareId,
+      studentName,
+      studentId,
+      studentIdentifier,
+      answers,
+    });
+
+    // End active assessment session upon submission
+    endAssessmentSession({
+      shareId,
+      sessionId: sessionId || req.headers?.['x-assessment-session'],
+      clientIp: req.ip,
+    });
+
+    return res.status(201).json({
+      success: true,
+      submissionId: result.submissionId,
+      submittedAt: result.submittedAt,
+      submission: result.submission || result,
+    });
+  } catch (err) {
+    console.error('Error in POST /api/share/:shareId/submit:', err);
+    return res.status(400).json({ error: err.message || 'Failed to submit answers' });
+  }
+});
+
+/**
+ * POST /api/share/:shareId/ask
+ * Public endpoint: Grounded contextual AI question answering for shared materials.
+ * Notes: RAG enabled.
+ * Assessment (Assignment, Quiz, Test, Exam): Strict rejection during active assessment.
+ */
+app.post('/api/share/:shareId/ask', async (req, res) => {
+  try {
+    const { shareId } = req.params;
+    const { question, interactionId, isSubmitted } = req.body;
+
+    const artifact = getArtifactByShareId(shareId, true);
+    if (!artifact) {
+      return res.status(404).json({ error: `Material not found for "${shareId}"` });
+    }
+
+    // Strict Assessment Mode Block: If ASSIGNMENT, QUIZ, TEST, or EXAM and not yet submitted
+    if (isAssessmentType(artifact.type) && !isSubmitted) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
+    if (isAssessmentActive(req)) {
+      return res.status(403).json({
+        error: 'ASSESSMENT_MODE_ACTIVE',
+        message: 'AI assistance is disabled during this assessment.',
+      });
+    }
+
+    if (!question || typeof question !== 'string' || !question.trim()) {
+      return res.status(400).json({ error: 'Please provide a valid question.' });
+    }
+
+    const result = await askQuestionAboutArtifact({
+      shareId,
+      question,
+      interactionId,
+      isSubmitted,
+    });
+
+    return res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err) {
+    console.error('Error in POST /api/share/:shareId/ask:', err);
+    return res.status(500).json({ error: err.message || 'Failed to answer question about material' });
+  }
+});
+
+/**
+ * POST /api/assessment/start
+ * Starts strict assessment mode session for ASSIGNMENT, QUIZ, TEST, or EXAM.
+ */
+app.post('/api/assessment/start', (req, res) => {
+  try {
+    const { sessionId, shareId, artifactType, artifactTitle } = req.body || {};
+    const clientIp = req.ip || req.connection?.remoteAddress || '';
+    const result = startAssessmentSession({
+      sessionId,
+      shareId,
+      artifactType,
+      artifactTitle,
+      clientIp,
+    });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Error in POST /api/assessment/start:', err);
+    return res.status(500).json({ error: err.message || 'Failed to start assessment session' });
+  }
+});
+
+/**
+ * POST /api/assessment/end
+ * Ends assessment mode session upon submission or explicit exit.
+ */
+app.post('/api/assessment/end', (req, res) => {
+  try {
+    const { sessionId, shareId } = req.body || {};
+    const clientIp = req.ip || req.connection?.remoteAddress || '';
+    const result = endAssessmentSession({ sessionId, shareId, clientIp });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Error in POST /api/assessment/end:', err);
+    return res.status(500).json({ error: err.message || 'Failed to end assessment session' });
+  }
+});
 
 /**
  * SPA Fallback & Static Serving

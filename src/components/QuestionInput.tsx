@@ -25,7 +25,6 @@ export interface QuestionInputProps {
   onChange: (value: string) => void;
   onSubmit: () => void;
   isLoading: boolean;
-  isDevMode?: boolean;
   // Step 7.2: Combined Image + Voice customization
   label?: string;
   accessibleVoiceLabel?: string;
@@ -49,7 +48,6 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
   onChange,
   onSubmit,
   isLoading,
-  isDevMode = false,
   label,
   accessibleVoiceLabel,
   placeholder,
@@ -91,130 +89,7 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
       (window as any).webkitSpeechRecognition
     );
 
-  // Temporary Developer Diagnostics State (Only visible in Developer Mode - Requirement)
-  const [micDiagnostics, setMicDiagnostics] = useState<{
-    secureContext: string;
-    protocol: string;
-    hostname: string;
-    mediaDevicesExists: string;
-    speechRecognitionExists: string;
-    permissionState: string;
-    lastError: string | null;
-    testingMic: boolean;
-  }>(() => {
-    const isClient = typeof window !== 'undefined';
-    return {
-      secureContext: isClient ? (window.isSecureContext ? 'YES' : 'NO') : 'NO',
-      protocol: isClient ? window.location.protocol : 'N/A',
-      hostname: isClient ? window.location.hostname : 'N/A',
-      mediaDevicesExists: isClient && Boolean(navigator?.mediaDevices) ? 'YES' : 'NO',
-      speechRecognitionExists:
-        isClient && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
-          ? 'YES'
-          : 'NO',
-      permissionState: 'checking...',
-      lastError: null,
-      testingMic: false,
-    };
-  });
 
-  // Query microphone permission state if browser supports navigator.permissions.query
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    let isMounted = true;
-
-    async function queryMicPermission() {
-      try {
-        if (navigator?.permissions?.query) {
-          const status = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-          if (isMounted) {
-            setMicDiagnostics((prev) => ({
-              ...prev,
-              permissionState: status.state || 'unknown',
-            }));
-          }
-          status.onchange = () => {
-            if (isMounted) {
-              setMicDiagnostics((prev) => ({
-                ...prev,
-                permissionState: status.state || 'unknown',
-              }));
-            }
-          };
-        } else {
-          if (isMounted) {
-            setMicDiagnostics((prev) => ({
-              ...prev,
-              permissionState: 'unsupported (permissions.query unavailable)',
-            }));
-          }
-        }
-      } catch (e: any) {
-        if (isMounted) {
-          setMicDiagnostics((prev) => ({
-            ...prev,
-            permissionState: `query error (${e?.name || 'unknown'})`,
-          }));
-        }
-      }
-    }
-
-    queryMicPermission();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  // Dedicated test function for developer mode: tests mediaDevices.getUserMedia without recording or calling Gemini
-  const handleTestMicrophonePermission = async () => {
-    if (typeof window === 'undefined') return;
-    setMicDiagnostics((prev) => ({ ...prev, testingMic: true, lastError: null }));
-
-    if (!navigator?.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      const errMsg = !window.isSecureContext
-        ? 'SecurityError: navigator.mediaDevices is undefined in non-secure HTTP contexts. Secure context (HTTPS or localhost) required.'
-        : 'NotFoundError: navigator.mediaDevices.getUserMedia is unavailable in this browser environment.';
-      setMicDiagnostics((prev) => ({
-        ...prev,
-        testingMic: false,
-        lastError: errMsg,
-        permissionState: 'denied/insecure',
-      }));
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Immediately stop all tracks to never record or keep mic open
-      stream.getTracks().forEach((track) => track.stop());
-      setMicDiagnostics((prev) => ({
-        ...prev,
-        testingMic: false,
-        lastError: null,
-        permissionState: 'granted',
-      }));
-    } catch (err: any) {
-      console.warn('Microphone permission test error:', err);
-      let errorReport = `${err.name || 'UnknownError'}: ${err.message || 'Microphone access failed'}`;
-
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        errorReport = 'NotAllowedError: Permission was denied by user or browser security policy.';
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        errorReport = 'NotFoundError: No audio input device (microphone) was found on this hardware.';
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        errorReport = 'NotReadableError: Microphone is already in use by another application or OS service.';
-      } else if (err.name === 'SecurityError') {
-        errorReport = 'SecurityError: Microphone media access is restricted in non-secure HTTP contexts.';
-      }
-
-      setMicDiagnostics((prev) => ({
-        ...prev,
-        testingMic: false,
-        lastError: errorReport,
-        permissionState: 'denied',
-      }));
-    }
-  };
 
   // Clean up any running speech recognition instance on component unmount
   useEffect(() => {
@@ -308,14 +183,6 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
 
       recognition.onerror = (event: any) => {
         console.warn('Speech recognition error:', event.error);
-        const errType = event.error || 'unknown';
-        const rawMsg = event.message ? `: ${event.message}` : '';
-        const detailedErr = `SpeechRecognitionError (${errType})${rawMsg}`;
-
-        setMicDiagnostics((prev) => ({
-          ...prev,
-          lastError: detailedErr,
-        }));
 
         if (event.error === 'not-allowed' || event.error === 'permission-denied') {
           setVoiceNotice('Microphone access was denied. Please allow microphone permission in your browser settings.');
@@ -347,8 +214,7 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
       recognition.start();
     } catch (err: any) {
       console.warn('Could not initialize SpeechRecognition:', err);
-      const initErr = `${err?.name || 'Error'}: ${err?.message || 'Could not instantiate SpeechRecognition'}`;
-      setMicDiagnostics((prev) => ({ ...prev, lastError: initErr }));
+
       setVoiceNotice('Unable to access microphone in this browser. Please type your question instead.');
       updateVoiceState('idle');
     }
@@ -388,11 +254,7 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
     }
   };
 
-  const computedLabel =
-    label ||
-    (isDevMode
-      ? 'Ask a question or prompt (/api/ask or /api/rag/ask):'
-      : 'Enter your question:');
+  const computedLabel = label || 'Enter your question:';
 
   const computedAccessibleVoiceLabel =
     accessibleVoiceLabel || 'Ask by voice or type below';
@@ -497,95 +359,7 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
         </div>
       )}
 
-      {/* Developer Mode Microphone Environment Diagnostics (Requirement: Only visible in Developer Mode) */}
-      {isDevMode && (
-        <div
-          className="dev-mic-environment-card"
-          style={{
-            background: '#0f172a',
-            border: '1px solid #38bdf8',
-            borderRadius: '8px',
-            padding: '0.85rem 1rem',
-            margin: '0.75rem 0',
-            fontFamily: 'monospace',
-            fontSize: '0.8rem',
-            color: '#e2e8f0',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <strong style={{ color: '#38bdf8' }}>Microphone environment:</strong>
-            <button
-              type="button"
-              onClick={handleTestMicrophonePermission}
-              disabled={micDiagnostics.testingMic}
-              style={{
-                background: '#1e293b',
-                color: '#38bdf8',
-                border: '1px solid #38bdf8',
-                borderRadius: '4px',
-                padding: '3px 8px',
-                cursor: 'pointer',
-                fontSize: '0.75rem',
-              }}
-            >
-              {micDiagnostics.testingMic ? 'Testing...' : 'Test Permission'}
-            </button>
-          </div>
 
-          <div style={{ whiteSpace: 'pre-line', lineHeight: '1.6' }}>
-{`Secure Context: ${micDiagnostics.secureContext}
-Protocol: ${micDiagnostics.protocol}
-Hostname: ${micDiagnostics.hostname}
-MediaDevices: ${micDiagnostics.mediaDevicesExists}
-Speech Recognition: ${micDiagnostics.speechRecognitionExists}
-Permission: ${micDiagnostics.permissionState}`}
-          </div>
-
-          {micDiagnostics.lastError && (
-            <div
-              style={{
-                marginTop: '0.6rem',
-                padding: '0.5rem',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid #ef4444',
-                borderRadius: '4px',
-                color: '#fca5a5',
-              }}
-            >
-              <strong>Exact Error:</strong> {micDiagnostics.lastError}
-            </div>
-          )}
-
-          {micDiagnostics.secureContext === 'NO' && (
-            <div
-              style={{
-                marginTop: '0.6rem',
-                padding: '0.5rem',
-                background: 'rgba(234, 179, 8, 0.15)',
-                border: '1px solid #eab308',
-                borderRadius: '4px',
-                color: '#fef08a',
-                fontSize: '0.75rem',
-                lineHeight: '1.4',
-              }}
-            >
-              ℹ️ <strong>Physical Phone Access Diagnosis:</strong>
-              <br />
-              Browsers (such as Android Chrome on iQOO) require a <strong>Secure Context</strong> (HTTPS or localhost) for microphone and Web Speech access. Accessing via LAN HTTP (<code>{`http://${micDiagnostics.hostname}:5173`}</code>) is non-secure, causing the phone to deny or block microphone access.
-              <br /><br />
-              <strong>iQOO Phone Workaround:</strong>
-              <br />
-              1. Open Chrome on your phone.
-              <br />
-              2. Go to: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>
-              <br />
-              3. Add: <code>{`http://${micDiagnostics.hostname}:5173`}</code>
-              <br />
-              4. Enable the flag and tap <strong>Relaunch</strong>. Chrome will now treat ByteMind as a Secure Context on local Wi-Fi!
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Question Textarea (Editable by student before pressing Ask ByteMind) */}
       <textarea

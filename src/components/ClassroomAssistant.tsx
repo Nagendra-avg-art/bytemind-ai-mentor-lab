@@ -463,49 +463,6 @@ export const ClassroomAssistant: React.FC<ClassroomAssistantProps> = ({
               )}
           </div>
 
-          {/* 5. Developer Mode Telemetry (Only rendered in Developer Mode) */}
-          {isDevMode && (
-            <div className="classroom-dev-telemetry">
-              <div className="telemetry-header">
-                🛠️ <strong>Developer Mode Diagnostics</strong>
-              </div>
-              <div className="telemetry-grid">
-                <div className="telemetry-item">
-                  <span className="telemetry-label">Gemini Status:</span>
-                  <code className="telemetry-value">{result.geminiStatus || 'AVAILABLE'}</code>
-                </div>
-                <div className="telemetry-item">
-                  <span className="telemetry-label">Intent:</span>
-                  <code className="telemetry-value">{result.intent}</code>
-                </div>
-                <div className="telemetry-item">
-                  <span className="telemetry-label">Document Used:</span>
-                  <code className="telemetry-value">{result.documentUsed}</code>
-                </div>
-                <div className="telemetry-item">
-                  <span className="telemetry-label">Retrieved Chunks:</span>
-                  <code className="telemetry-value">{result.retrievedChunks} chunks</code>
-                </div>
-                <div className="telemetry-item">
-                  <span className="telemetry-label">Execution Time:</span>
-                  <code className="telemetry-value">{result.executionMs}ms</code>
-                </div>
-              </div>
-              {result.sources && result.sources.length > 0 && (
-                <div className="telemetry-sources">
-                  <span className="telemetry-label">Source Chunks:</span>
-                  <div className="sources-list">
-                    {result.sources.map((s, idx) => (
-                      <div key={idx} className="source-item">
-                        <span>Chunk #{s.chunkIndex ?? idx} ({s.documentId})</span>
-                        {s.textPreview && <small>{s.textPreview.slice(0, 100)}...</small>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </section>
       )}
     </div>
